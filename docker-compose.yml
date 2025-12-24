@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  permit-automation:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: permit-automation
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Override credentials path for container
+      GOOGLE_CREDENTIALS_FILE: /app/credentials.json
+    volumes:
+      # Mount Google credentials file (reads path from .env)
+      - ./${GOOGLE_CREDENTIALS_FILE}:/app/credentials.json:ro
+
+      # Optional: Mount for saving downloaded PDFs
+      - ./permits:/app/permits
+
+    restart: unless-stopped
