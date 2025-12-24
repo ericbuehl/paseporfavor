@@ -18,7 +18,7 @@ WORKDIR /app
 
 # Copy project files
 COPY pyproject.toml uv.lock ./
-COPY main.py app.py ./
+COPY *.py ./
 COPY .env.example ./
 
 # Install Python and dependencies with uv (uv will download Python automatically)

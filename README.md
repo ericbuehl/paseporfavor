@@ -18,28 +18,26 @@ http://localhost:8000
 
 ## Configuration
 
-Edit `.env` file:
+Edit `.env` file with **required** fields:
 
 ```bash
-# Google Cloud Vision API (choose one)
+# Google Cloud Vision API (REQUIRED)
 GOOGLE_CREDENTIALS_FILE=./your-credentials.json
-# OR
-# GOOGLE_API_KEY=your-api-key
 
-# Santa Monica account details
+# Santa Monica account details (REQUIRED)
 ACCOUNT_NUMBER=your-account-number
 ZIP_CODE=90405
 LAST_NAME=YourLastName
 EMAIL=your-email@example.com
 
-# Printer (optional - for auto-printing)
+# Optional settings
 PRINTER_IP=192.168.1.100
 PRINTER_NAME=AutoPrinter
 AUTO_PRINT=true
-
-# Mode
 DRY_RUN=true  # Set false for production
 ```
+
+**Note:** The application will not start if required fields are missing.
 
 ### Getting Google Cloud Credentials
 

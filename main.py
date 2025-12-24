@@ -1,22 +1,18 @@
 import asyncio
 import base64
 import json
-import os
 import subprocess
 import time
-from datetime import datetime, timedelta, date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Optional, Union
 from urllib.parse import urljoin
 
 import httpx
 import jwt
 from bs4 import BeautifulSoup
-from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+from settings import settings
 
 
 class SantaMonicaPermitAutomation:
@@ -27,26 +23,21 @@ class SantaMonicaPermitAutomation:
     VISION_API_URL = "https://vision.googleapis.com/v1/images:annotate"
     GOOGLE_OAUTH_URL = "https://oauth2.googleapis.com/token"
 
-    def __init__(
-        self,
-        google_api_key: Optional[str] = None,
-        google_credentials_file: Optional[str] = None
-    ):
+    def __init__(self, google_credentials_file: str | None = None):
         """
         Initialize the automation client.
 
         Args:
-            google_api_key: Google Cloud Vision API key. If not provided,
-                          will look for GOOGLE_API_KEY environment variable.
             google_credentials_file: Path to Google service account JSON file.
-                          If not provided, will look for GOOGLE_CREDENTIALS_FILE environment variable.
+                          If not provided, will use settings.google_credentials_file.
         """
         # AsyncClient with cookie persistence
-        self.client: Optional[httpx.AsyncClient] = None
-        self.google_api_key = google_api_key or os.getenv('GOOGLE_API_KEY')
-        self.google_credentials_file = google_credentials_file or os.getenv('GOOGLE_CREDENTIALS_FILE')
-        self._access_token: Optional[str] = None
-        self._token_expiry: Optional[datetime] = None
+        self.client: httpx.AsyncClient | None = None
+        self.google_credentials_file: str = (
+            google_credentials_file or settings.google_credentials_file
+        )
+        self._access_token: str | None = None
+        self._token_expiry: datetime | None = None
 
     async def __aenter__(self):
         """Initialize the async HTTP client with cookie jar."""
@@ -120,21 +111,28 @@ class SantaMonicaPermitAutomation:
             ValueError: If credentials file is not configured or invalid
         """
         # Return cached token if still valid
-        if self._access_token and self._token_expiry:
-            if datetime.utcnow() < self._token_expiry - timedelta(minutes=5):
-                return self._access_token
+        if (
+            self._access_token
+            and self._token_expiry
+            and datetime.utcnow() < self._token_expiry - timedelta(minutes=5)
+        ):
+            return self._access_token
 
         if not self.google_credentials_file:
             raise ValueError("Google credentials file not configured")
 
         # Load service account credentials
         try:
-            with open(self.google_credentials_file, 'r') as f:
+            with open(self.google_credentials_file) as f:
                 credentials = json.load(f)
-        except FileNotFoundError:
-            raise ValueError(f"Credentials file not found: {self.google_credentials_file}")
-        except json.JSONDecodeError:
-            raise ValueError(f"Invalid JSON in credentials file: {self.google_credentials_file}")
+        except FileNotFoundError as err:
+            raise ValueError(
+                f"Credentials file not found: {self.google_credentials_file}"
+            ) from err
+        except json.JSONDecodeError as err:
+            raise ValueError(
+                f"Invalid JSON in credentials file: {self.google_credentials_file}"
+            ) from err
 
         # Extract required fields
         private_key = credentials.get('private_key')
@@ -195,7 +193,7 @@ class SantaMonicaPermitAutomation:
         """
         Use Google Cloud Vision API to perform OCR on CAPTCHA image.
         Uses direct REST API calls via httpx for full async support.
-        Supports both API key and service account authentication.
+        Requires service account authentication.
 
         Args:
             image_content: Raw bytes of the CAPTCHA image
@@ -204,54 +202,40 @@ class SantaMonicaPermitAutomation:
             Extracted text from the CAPTCHA
 
         Raises:
-            ValueError: If neither API key nor credentials file is configured
+            ValueError: If credentials file is not configured
             httpx.HTTPError: If API request fails
         """
-        if not self.google_api_key and not self.google_credentials_file:
+        if not self.google_credentials_file:
             raise ValueError(
-                "Google authentication not configured. Either:\n"
-                "1. Set GOOGLE_API_KEY environment variable, or\n"
-                "2. Set GOOGLE_CREDENTIALS_FILE environment variable, or\n"
-                "3. Pass google_api_key or google_credentials_file to constructor."
+                "Google credentials file not configured. Set GOOGLE_CREDENTIALS_FILE "
+                "environment variable or pass google_credentials_file to constructor."
             )
 
         # Encode image to base64
-        image_base64 = base64.b64encode(image_content).decode('utf-8')
+        image_base64 = base64.b64encode(image_content).decode("utf-8")
 
         # Prepare Vision API request
         request_body = {
             "requests": [
                 {
-                    "image": {
-                        "content": image_base64
-                    },
-                    "features": [
-                        {
-                            "type": "TEXT_DETECTION",
-                            "maxResults": 1
-                        }
-                    ]
+                    "image": {"content": image_base64},
+                    "features": [{"type": "TEXT_DETECTION", "maxResults": 1}],
                 }
             ]
         }
 
-        # Make async request to Vision API
+        # Make async request to Vision API with OAuth2
         async with httpx.AsyncClient() as api_client:
-            # Use API key if available, otherwise use OAuth2
-            if self.google_api_key:
-                url = f"{self.VISION_API_URL}?key={self.google_api_key}"
-                headers = {}
-            else:
-                # Get OAuth2 access token
-                access_token = await self._get_access_token()
-                url = self.VISION_API_URL
-                headers = {'Authorization': f'Bearer {access_token}'}
+            # Get OAuth2 access token
+            access_token = await self._get_access_token()
+            url = self.VISION_API_URL
+            headers = {"Authorization": f"Bearer {access_token}"}
 
             response = await api_client.post(
                 url,
                 json=request_body,
                 headers=headers,
-                timeout=30.0
+                timeout=30.0,
             )
 
             # Better error handling for Vision API
@@ -356,8 +340,8 @@ class SantaMonicaPermitAutomation:
     async def submit_permit_details(
         self,
         permit_quantity: int = 1,
-        permit_date: Optional[str] = None,
-        email: Optional[str] = None
+        permit_date: str | None = None,
+        email: str | None = None
     ) -> dict:
         """
         Submit permit details (quantity, date, email) after initial authentication.
@@ -376,11 +360,9 @@ class SantaMonicaPermitAutomation:
             today = date.today()
             permit_date = today.strftime('%m/%d/%Y')
 
-        # Get email from environment if not provided
+        # Get email from settings if not provided
         if not email:
-            email = os.getenv('EMAIL')
-            if not email:
-                raise ValueError("Email not provided and EMAIL environment variable not set")
+            email = settings.email
 
         # Parse the current page to find the form action and fields
         # This will depend on the actual form structure after authentication
@@ -496,7 +478,7 @@ class SantaMonicaPermitAutomation:
 
         return response.content
 
-    async def print_pdf(self, pdf_source: Union[Path, bytes], printer_name: Optional[str] = None) -> bool:
+    async def print_pdf(self, pdf_source: Path | bytes, printer_name: str | None = None) -> bool:
         """
         Print a PDF file using the system's CUPS printer.
         Automatically handles temporary file creation and cleanup for bytes input.
@@ -508,9 +490,9 @@ class SantaMonicaPermitAutomation:
         Returns:
             True if print job was submitted successfully, False otherwise
         """
-        # Get printer name from environment if not provided
+        # Get printer name from settings if not provided
         if not printer_name:
-            printer_name = os.getenv('PRINTER_NAME')
+            printer_name = settings.printer_name
 
         try:
             # Handle bytes input with temporary file
@@ -526,7 +508,7 @@ class SantaMonicaPermitAutomation:
                     cmd.append(tmp_file.name)
 
                     # Submit print job (file automatically deleted after this block)
-                    result = subprocess.run(
+                    subprocess.run(
                         cmd,
                         capture_output=True,
                         text=True,
@@ -545,7 +527,7 @@ class SantaMonicaPermitAutomation:
                 cmd.append(str(pdf_source))
 
                 # Submit print job
-                result = subprocess.run(
+                subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,

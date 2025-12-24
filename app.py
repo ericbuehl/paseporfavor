@@ -4,19 +4,18 @@ FastAPI web service for Santa Monica parking permit automation.
 
 import asyncio
 import json
-import os
 import re
 import traceback
-from datetime import datetime, date
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+from datetime import date
 
-from bs4 import BeautifulSoup
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
-from fastapi.templating import Jinja2Templates
 import uvicorn
+from bs4 import BeautifulSoup
+from fastapi import FastAPI, Form
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 from main import SantaMonicaPermitAutomation
+from settings import settings
 
 app = FastAPI(title="Santa Monica Permit Automation")
 
@@ -321,11 +320,11 @@ PROGRESS_TEMPLATE = """
 @app.get("/", response_class=HTMLResponse)
 async def home():
     """Home page with permit request form."""
-    dry_run = os.getenv('DRY_RUN', 'false').lower() in ('true', '1', 'yes')
-    account_number = os.getenv('ACCOUNT_NUMBER', 'Not configured')
-    last_name = os.getenv('LAST_NAME', 'Not configured')
-    email = os.getenv('EMAIL', 'Not configured')
-    auto_print = os.getenv('AUTO_PRINT', 'true').lower() in ('true', '1', 'yes')
+    dry_run = settings.dry_run
+    account_number = settings.account_number
+    last_name = settings.last_name
+    email = settings.email
+    auto_print = settings.auto_print
 
     # Simple template rendering (we'll use jinja2 for proper template support)
     html = HOME_TEMPLATE
@@ -355,7 +354,7 @@ async def generate_page(permits: int = Form(1)):
     return HTMLResponse(content=html)
 
 
-async def generate_permits_stream(num_permits: int) -> AsyncGenerator[str, None]:
+async def generate_permits_stream(num_permits: int) -> AsyncGenerator[str]:
     """
     Generator that yields Server-Sent Events with progress updates.
     """
@@ -366,18 +365,8 @@ async def generate_permits_stream(num_permits: int) -> AsyncGenerator[str, None]
         yield f"data: {data}\n\n"
 
     try:
-        # Configuration
-        DRY_RUN = os.getenv('DRY_RUN', 'false').lower() in ('true', '1', 'yes')
-        AUTO_PRINT = os.getenv('AUTO_PRINT', 'true').lower() in ('true', '1', 'yes')
-        PRINTER_NAME = os.getenv('PRINTER_NAME', 'AutoPrinter')
-
-        ACCOUNT_NUMBER = os.getenv('ACCOUNT_NUMBER')
-        ZIP_CODE = os.getenv('ZIP_CODE', '90401')
-        LAST_NAME = os.getenv('LAST_NAME')
-        EMAIL = os.getenv('EMAIL')
-
         yield emit("=" * 60, 'log')
-        if DRY_RUN:
+        if settings.dry_run:
             yield emit("DRY-RUN MODE - Test workflow without final submission", 'log')
         else:
             yield emit("Santa Monica Parking Permit Automation", 'log')
@@ -391,7 +380,7 @@ async def generate_permits_stream(num_permits: int) -> AsyncGenerator[str, None]
             yield emit("Fetching form", 'status')
 
             form_data = await automation.fetch_initial_form()
-            yield emit(f"  ✓ Form loaded (Status: 200)", 'log')
+            yield emit("  ✓ Form loaded (Status: 200)", 'log')
             yield emit(f"  ✓ Found {len(form_data['form_fields'])} form fields", 'log')
 
             if form_data['captcha_url']:
@@ -415,22 +404,22 @@ async def generate_permits_stream(num_permits: int) -> AsyncGenerator[str, None]
             result = await automation.submit_form(
                 form_action=form_data['form_action'],
                 form_fields=form_data['form_fields'],
-                account_number=ACCOUNT_NUMBER,
-                zip_code=ZIP_CODE,
-                last_name=LAST_NAME,
+                account_number=settings.account_number,
+                zip_code=settings.zip_code,
+                last_name=settings.last_name,
                 captcha_text=captcha_text,
                 form_method=form_data['form_method']
             )
             yield emit(f"  ✓ Authentication submitted (Status: {result['status']})", 'log')
             yield emit("", 'log')
 
-            if DRY_RUN:
+            if settings.dry_run:
                 yield emit("=" * 60, 'log')
                 yield emit("DRY-RUN: Stopping before final submission", 'log')
                 yield emit("", 'log')
 
                 # Print test permit
-                if AUTO_PRINT:
+                if settings.auto_print:
                     yield emit("[Test] Printing demo permit...", 'log')
                     yield emit("Printing demo", 'status')
 
@@ -438,19 +427,23 @@ async def generate_permits_stream(num_permits: int) -> AsyncGenerator[str, None]
                     test_pdf_url = "https://upload.wikimedia.org/wikipedia/commons/d/d3/Test.pdf"
 
                     try:
-                        yield emit(f"  • Downloading test PDF from Wikipedia...", 'log')
+                        yield emit("  • Downloading test PDF from Wikipedia...", 'log')
                         response = await automation.client.get(test_pdf_url)
                         response.raise_for_status()
 
                         test_pdf_bytes = response.content
                         yield emit(f"  ✓ Test PDF downloaded ({len(test_pdf_bytes)} bytes)", 'log')
 
-                        print_success = await automation.print_pdf(test_pdf_bytes, PRINTER_NAME)
+                        print_success = await automation.print_pdf(
+                            test_pdf_bytes, settings.printer_name
+                        )
 
                         if print_success:
-                            yield emit(f"  ✓ Demo permit sent to printer: {PRINTER_NAME}", 'log')
+                            yield emit(
+                                f"  ✓ Demo permit sent to printer: {settings.printer_name}", 'log'
+                            )
                         else:
-                            yield emit(f"  ✗ Failed to print demo permit", 'log')
+                            yield emit("  ✗ Failed to print demo permit", 'log')
                     except Exception as e:
                         yield emit(f"  ✗ Failed to download test PDF: {e}", 'log')
 
@@ -481,7 +474,7 @@ async def generate_permits_stream(num_permits: int) -> AsyncGenerator[str, None]
                 updates={
                     'quantity': str(num_permits),
                     'date': today,
-                    'email': EMAIL
+                    'email': settings.email
                 },
                 form_method=next_form['form_method']
             )
@@ -493,7 +486,7 @@ async def generate_permits_stream(num_permits: int) -> AsyncGenerator[str, None]
             yield emit("Confirming", 'status')
 
             confirm_form = await automation.parse_next_form(permit_result['html'])
-            yield emit(f"  ✓ Confirmation form ready", 'log')
+            yield emit("  ✓ Confirmation form ready", 'log')
             yield emit("", 'log')
 
             # Step 7: Final submission
@@ -536,14 +529,14 @@ async def generate_permits_stream(num_permits: int) -> AsyncGenerator[str, None]
                 pdf_bytes = await automation.download_permit_pdf(pdf_url)
                 yield emit(f"  ✓ Downloaded permit {i} ({len(pdf_bytes)} bytes)", 'log')
 
-                if AUTO_PRINT:
-                    yield emit(f"  📄 Printing permit {i} to {PRINTER_NAME}...", 'log')
-                    print_success = await automation.print_pdf(pdf_bytes, PRINTER_NAME)
+                if settings.auto_print:
+                    yield emit(f"  📄 Printing permit {i} to {settings.printer_name}...", 'log')
+                    print_success = await automation.print_pdf(pdf_bytes, settings.printer_name)
 
                     if print_success:
-                        yield emit(f"  ✓ Print job submitted successfully", 'log')
+                        yield emit("  ✓ Print job submitted successfully", 'log')
                     else:
-                        yield emit(f"  ✗ Print job failed", 'log')
+                        yield emit("  ✗ Print job failed", 'log')
 
                 yield emit("", 'log')
 
@@ -555,7 +548,7 @@ async def generate_permits_stream(num_permits: int) -> AsyncGenerator[str, None]
             yield emit("", 'complete')
 
     except Exception as e:
-        yield emit(f"Error: {str(e)}", 'error')
+        yield emit(f"Error: {e!s}", 'error')
         yield emit(traceback.format_exc(), 'log')
 
 
