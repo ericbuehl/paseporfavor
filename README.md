@@ -13,7 +13,7 @@ cp .env.example .env
 docker-compose up
 
 # 3. Open browser
-http://localhost:8000
+http://localhost:1886
 ```
 
 ## Configuration
@@ -57,7 +57,7 @@ DRY_RUN=true  # Set false for production
 
 ## How It Works
 
-1. User visits web interface at `http://localhost:8000`
+1. User visits web interface at `http://localhost:1886`
 2. Enters number of permits needed
 3. Service fetches Santa Monica permit form
 4. Solves CAPTCHA using Google Vision API

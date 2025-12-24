@@ -11,7 +11,7 @@ from datetime import date
 
 import uvicorn
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from main import SantaMonicaPermitAutomation
@@ -318,12 +318,13 @@ PROGRESS_TEMPLATE = """
 
 
 @app.get("/", response_class=HTMLResponse)
-async def home():
+async def home(request: Request):
     """Home page with permit request form."""
     dry_run = settings.dry_run
     account_number = settings.account_number
     last_name = settings.last_name
-    email = settings.email
+    # Use Cloudflare Access authenticated email if available, otherwise use settings
+    email = request.headers.get("cf-access-authenticated-user-email", settings.email)
     auto_print = settings.auto_print
 
     # Simple template rendering (we'll use jinja2 for proper template support)
@@ -354,9 +355,15 @@ async def generate_page(permits: int = Form(1)):
     return HTMLResponse(content=html)
 
 
-async def generate_permits_stream(num_permits: int) -> AsyncGenerator[str]:
+async def generate_permits_stream(
+    num_permits: int, user_email: str | None = None
+) -> AsyncGenerator[str]:
     """
     Generator that yields Server-Sent Events with progress updates.
+
+    Args:
+        num_permits: Number of permits to generate
+        user_email: Override email (e.g. from Cloudflare Access), falls back to settings
     """
 
     async def emit(message: str, event_type: str = 'log'):
@@ -365,6 +372,8 @@ async def generate_permits_stream(num_permits: int) -> AsyncGenerator[str]:
         yield f"data: {data}\n\n"
 
     try:
+        # Use provided email or fall back to settings
+        email = user_email or settings.email
         yield emit("=" * 60, 'log')
         if settings.dry_run:
             yield emit("DRY-RUN MODE - Test workflow without final submission", 'log')
@@ -474,7 +483,7 @@ async def generate_permits_stream(num_permits: int) -> AsyncGenerator[str]:
                 updates={
                     'quantity': str(num_permits),
                     'date': today,
-                    'email': settings.email
+                    'email': email
                 },
                 form_method=next_form['form_method']
             )
@@ -553,12 +562,15 @@ async def generate_permits_stream(num_permits: int) -> AsyncGenerator[str]:
 
 
 @app.get("/stream")
-async def stream_progress(permits: int = 1):
+async def stream_progress(request: Request, permits: int = 1):
     """
     Server-Sent Events endpoint for streaming progress.
     """
+    # Extract email from Cloudflare Access header if present
+    user_email = request.headers.get("cf-access-authenticated-user-email")
+
     async def event_generator():
-        async for event in generate_permits_stream(permits):
+        async for event in generate_permits_stream(permits, user_email):
             async for chunk in event:
                 yield chunk
             await asyncio.sleep(0.01)  # Small delay for smooth streaming
@@ -581,4 +593,4 @@ async def health():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=1886, log_level="info")

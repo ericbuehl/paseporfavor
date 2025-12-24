@@ -34,11 +34,11 @@ ENV PRINTER_NAME="AutoPrinter"
 ENV PYTHONUNBUFFERED=1
 ENV DRY_RUN="false"
 
-# Expose web service and CUPS
-EXPOSE 8000 631
+# Expose web service
+EXPOSE 1886
 
 # Use entrypoint script to start CUPS and run the app
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 # Default: run web service
-CMD ["uv", "run", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "1886"]

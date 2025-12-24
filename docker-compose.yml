@@ -7,7 +7,7 @@ services:
       dockerfile: Dockerfile
     container_name: permit-automation
     ports:
-      - "8000:8000"
+      - "1886:1886"
     env_file:
       - .env
     environment:
