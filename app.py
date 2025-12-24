@@ -396,31 +396,82 @@ async def generate_permits_stream(
                 yield emit(f"  ✓ CAPTCHA URL: {form_data['captcha_url'][:50]}...", 'log')
             yield emit("", 'log')
 
-            # Step 2: Solve CAPTCHA
-            yield emit("[2/7] Solving CAPTCHA with Google Vision API...", 'log')
-            yield emit("Solving CAPTCHA", 'status')
+            # Step 2 & 3: Solve CAPTCHA and authenticate (with retry logic)
+            max_captcha_attempts = 3
+            captcha_attempt = 0
+            result = None
 
-            captcha_text = await automation.download_and_solve_captcha(
-                form_data['captcha_url']
-            )
-            yield emit(f"  ✓ CAPTCHA solved: {captcha_text}", 'log')
-            yield emit("", 'log')
+            while captcha_attempt < max_captcha_attempts:
+                captcha_attempt += 1
 
-            # Step 3: Submit authentication
-            yield emit("[3/7] Submitting authentication...", 'log')
-            yield emit("Authenticating", 'status')
+                # Solve CAPTCHA
+                yield emit(
+                    f"[2/7] Solving CAPTCHA with Google Vision API (attempt {captcha_attempt}/{max_captcha_attempts})...",
+                    'log'
+                )
+                yield emit("Solving CAPTCHA", 'status')
 
-            result = await automation.submit_form(
-                form_action=form_data['form_action'],
-                form_fields=form_data['form_fields'],
-                account_number=settings.account_number,
-                zip_code=settings.zip_code,
-                last_name=settings.last_name,
-                captcha_text=captcha_text,
-                form_method=form_data['form_method']
-            )
-            yield emit(f"  ✓ Authentication submitted (Status: {result['status']})", 'log')
-            yield emit("", 'log')
+                captcha_text = await automation.download_and_solve_captcha(
+                    form_data['captcha_url']
+                )
+
+                # Validate CAPTCHA format (should be exactly 5 digits)
+                if not captcha_text.isdigit() or len(captcha_text) != 5:
+                    yield emit(
+                        f"  ⚠ CAPTCHA format invalid: '{captcha_text}' (expected 5 digits)",
+                        'log'
+                    )
+                    if captcha_attempt < max_captcha_attempts:
+                        yield emit("  ↻ Retrying with fresh CAPTCHA...", 'log')
+                        # Refetch form to get new CAPTCHA
+                        form_data = await automation.fetch_initial_form()
+                        continue
+                    else:
+                        raise ValueError(
+                            f"Failed to solve CAPTCHA after {max_captcha_attempts} attempts"
+                        )
+
+                yield emit(f"  ✓ CAPTCHA solved: {captcha_text}", 'log')
+                yield emit("", 'log')
+
+                # Submit authentication
+                yield emit("[3/7] Submitting authentication...", 'log')
+                yield emit("Authenticating", 'status')
+
+                result = await automation.submit_form(
+                    form_action=form_data['form_action'],
+                    form_fields=form_data['form_fields'],
+                    account_number=settings.account_number,
+                    zip_code=settings.zip_code,
+                    last_name=settings.last_name,
+                    captcha_text=captcha_text,
+                    form_method=form_data['form_method']
+                )
+
+                # Check if CAPTCHA was rejected
+                if "Please Enter Valid Captcha Text" in result['html']:
+                    yield emit(
+                        f"  ✗ CAPTCHA rejected by server: '{captcha_text}'",
+                        'log'
+                    )
+                    if captcha_attempt < max_captcha_attempts:
+                        yield emit("  ↻ Retrying with fresh CAPTCHA...", 'log')
+                        # Refetch form to get new CAPTCHA
+                        form_data = await automation.fetch_initial_form()
+                        continue
+                    else:
+                        raise ValueError(
+                            f"CAPTCHA validation failed after {max_captcha_attempts} attempts"
+                        )
+
+                # Success!
+                yield emit(f"  ✓ Authentication submitted (Status: {result['status']})", 'log')
+                yield emit("", 'log')
+                break
+
+            # Ensure we got a valid result
+            if result is None:
+                raise ValueError("Failed to authenticate - no valid response received")
 
             if settings.dry_run:
                 yield emit("=" * 60, 'log')
