@@ -6,7 +6,7 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin
 
 import httpx
 import jwt
@@ -399,23 +399,23 @@ class SantaMonicaPermitAutomation:
         form_action = form.get('action')
         form_method = form.get('method', 'post').upper()
 
-        # Extract all form inputs
-        form_fields = {}
+        # Extract all form inputs as list of tuples to preserve duplicates and order
+        form_fields = []
         for input_tag in form.find_all(['input', 'select', 'textarea']):
             name = input_tag.get('name')
             value = input_tag.get('value', '')
             input_type = input_tag.get('type', 'text')
 
             if name:
-                form_fields[name] = {
+                form_fields.append((name, {
                     'value': value,
                     'type': input_type
-                }
+                }))
 
         return {
             'form_action': urljoin(self.BASE_URL, form_action) if form_action else None,
             'form_method': form_method,
-            'form_fields': form_fields,
+            'form_fields': form_fields,  # Now a list of tuples
             'has_form': True,
             'html': html_content
         }
@@ -439,19 +439,41 @@ class SantaMonicaPermitAutomation:
         Returns:
             Dict with response HTML, status, URL, and cookies
         """
-        # Build form data, using existing values and applying updates
-        form_data = {}
-        for field_name, field_info in form_fields.items():
+        # Build form data as list of tuples to preserve duplicates and order
+        # form_fields is now a list of (name, field_info) tuples
+        form_data = []
+        for field_name, field_info in form_fields:
+            field_type = field_info.get('type', '').lower()
+
+            # Skip buttons and submit fields unless explicitly in updates
+            # (In a browser, only the clicked button is submitted)
+            if field_type in ('submit', 'button') and field_name not in updates:
+                continue
+
             if field_name in updates:
-                form_data[field_name] = updates[field_name]
+                form_data.append((field_name, updates[field_name]))
             else:
-                form_data[field_name] = field_info.get('value', '')
+                form_data.append((field_name, field_info.get('value', '')))
+
+        # Set headers that match a real browser request
+        # Referer should be the form action URL (same for all steps in this workflow)
+        headers = {
+            'Referer': form_action,
+            'Origin': self.BASE_URL,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9'
+        }
+
+        # URL-encode the form data manually to properly handle duplicate keys
+        encoded_data = urlencode(form_data)
 
         # Submit using the appropriate method
         if form_method.upper() == 'GET':
-            response = await self.client.get(form_action, params=form_data)
+            response = await self.client.get(form_action, params=form_data, headers=headers)
         else:
-            response = await self.client.post(form_action, data=form_data)
+            # Send as URL-encoded content with explicit Content-Type
+            headers['Content-Type'] = 'application/x-www-form-urlencoded'
+            response = await self.client.post(form_action, content=encoded_data, headers=headers)
 
         response.raise_for_status()
 

@@ -466,6 +466,11 @@ async def generate_permits_stream(
 
                 # Success!
                 yield emit(f"  ✓ Authentication submitted (Status: {result['status']})", 'log')
+
+                # Debug: Show session info
+                session_id = result.get('cookies', {}).get('JSESSIONID', 'N/A')
+                yield emit(f"  ℹ Session ID: {session_id}", 'log')
+
                 yield emit("", 'log')
                 break
 
@@ -520,21 +525,38 @@ async def generate_permits_stream(
             next_form = await automation.parse_next_form(result['html'])
             yield emit(f"  ✓ Found form action: {next_form['form_action']}", 'log')
             yield emit(f"  ✓ Found {len(next_form['form_fields'])} fields", 'log')
+
+            # Debug: Show field names and TokenKey for troubleshooting
+            field_names = [name for name, _ in next_form['form_fields']]
+            yield emit(f"  ℹ Fields: {', '.join(field_names)}", 'log')
+
+            # Extract and display TokenKey for debugging
+            token_key = next((value['value'] for name, value in next_form['form_fields'] if name == 'TokenKey'), None)
+            if token_key:
+                yield emit(f"  ℹ TokenKey: {token_key}", 'log')
+
             yield emit("", 'log')
 
             # Step 5: Submit permit request details
             yield emit("[5/7] Submitting permit request...", 'log')
             yield emit("Submitting permit request", 'status')
 
-            today = date.today().strftime('%m/%d/%Y')
+            today = date.today()
+
+            # Debug: Show what we're submitting
+            yield emit(f"  ℹ Requesting {num_permits} permit(s) for {today.strftime('%m/%d/%Y')}", 'log')
+            yield emit(f"  ℹ Email: {email}", 'log')
 
             permit_result = await automation.submit_dynamic_form(
                 form_action=next_form['form_action'],
                 form_fields=next_form['form_fields'],
                 updates={
-                    'quantity': str(num_permits),
-                    'date': today,
-                    'email': email
+                    'permitCount': str(num_permits),
+                    'permitMonth': str(today.month),
+                    'permitDay': str(today.day),
+                    'permitYear': str(today.year),
+                    'email': email,
+                    'emailConfirm': email
                 },
                 form_method=next_form['form_method']
             )
@@ -547,6 +569,16 @@ async def generate_permits_stream(
 
             confirm_form = await automation.parse_next_form(permit_result['html'])
             yield emit("  ✓ Confirmation form ready", 'log')
+
+            # Debug: Show confirmation form details
+            confirm_field_names = [name for name, _ in confirm_form['form_fields']]
+            yield emit(f"  ℹ Confirmation fields: {', '.join(confirm_field_names)}", 'log')
+
+            # Extract and display TokenKey for debugging
+            confirm_token = next((value['value'] for name, value in confirm_form['form_fields'] if name == 'TokenKey'), None)
+            if confirm_token:
+                yield emit(f"  ℹ TokenKey: {confirm_token}", 'log')
+
             yield emit("", 'log')
 
             # Step 7: Final submission
@@ -556,7 +588,10 @@ async def generate_permits_stream(
             final_result = await automation.submit_dynamic_form(
                 form_action=confirm_form['form_action'],
                 form_fields=confirm_form['form_fields'],
-                updates={},
+                updates={
+                    'requestType': 'submit',
+                    'submit': 'Submit'
+                },
                 form_method=confirm_form['form_method']
             )
             yield emit(f"  ✓ Final submission complete (Status: {final_result['status']})", 'log')
@@ -569,7 +604,10 @@ async def generate_permits_stream(
 
             # Find JavaScript PDF links
             pdf_links = []
-            for link in soup.find_all('a', href=lambda x: x and 'javascript:' in x.lower()):
+            javascript_links = soup.find_all('a', href=lambda x: x and 'javascript:' in x.lower())
+            yield emit(f"  ℹ Found {len(javascript_links)} JavaScript link(s) to parse", 'log')
+
+            for link in javascript_links:
                 href = link.get('href', '')
                 match = re.search(r"['\"]([^'\"]*(?:pdf|FileType=pdf)[^'\"]*)['\"]", href)
                 if match:
@@ -577,9 +615,76 @@ async def generate_permits_stream(
                     if not pdf_url.startswith('http'):
                         pdf_url = f"https://wmq.etimspayments.com{pdf_url}"
                     pdf_links.append(pdf_url)
+                    yield emit(f"  ℹ PDF link: {pdf_url}", 'log')
 
             yield emit(f"  ✓ Found {len(pdf_links)} PDF link(s)", 'log')
             yield emit("", 'log')
+
+            # Validate that permits were actually generated
+            if len(pdf_links) == 0:
+                yield emit("✗ No permit PDFs were generated!", 'log')
+                yield emit("", 'log')
+                yield emit("Analyzing response for errors...", 'log')
+
+                # Check for common error indicators in the HTML response
+                error_messages = []
+
+                # Look for error text patterns
+                if "error" in final_result['html'].lower():
+                    error_section = soup.find(text=re.compile(r'error', re.IGNORECASE))
+                    if error_section:
+                        error_messages.append(f"Error found in response: {error_section.strip()}")
+
+                # Look for validation messages
+                if "please" in final_result['html'].lower() and "valid" in final_result['html'].lower():
+                    validation_text = soup.find(text=re.compile(r'please.*valid', re.IGNORECASE))
+                    if validation_text:
+                        error_messages.append(f"Validation issue: {validation_text.strip()}")
+
+                # Check for alert/warning divs
+                for alert in soup.find_all(['div', 'span'], class_=re.compile(r'(alert|error|warning)', re.IGNORECASE)):
+                    if alert.get_text(strip=True):
+                        error_messages.append(f"Alert: {alert.get_text(strip=True)}")
+
+                if error_messages:
+                    for msg in error_messages:
+                        yield emit(f"  • {msg}", 'log')
+                else:
+                    yield emit("  • No specific error message found in response", 'log')
+
+                yield emit("", 'log')
+                yield emit("DEBUG: Response HTML snippet (first 500 chars):", 'log')
+                html_snippet = final_result['html'][:500].replace('\n', ' ').replace('\r', '')
+                yield emit(f"  {html_snippet}...", 'log')
+                yield emit("", 'log')
+
+                # Look for any form elements or text that might indicate what went wrong
+                yield emit("DEBUG: Checking page structure...", 'log')
+
+                # Check for forms (might be back at a previous step)
+                forms = soup.find_all('form')
+                if forms:
+                    yield emit(f"  • Found {len(forms)} form(s) on page", 'log')
+                    for idx, form in enumerate(forms[:2], 1):
+                        form_action = form.get('action', 'N/A')
+                        yield emit(f"    Form {idx}: action='{form_action}'", 'log')
+
+                # Check for any text in the body
+                body = soup.find('body')
+                if body:
+                    body_text = body.get_text(strip=True)[:200]
+                    yield emit(f"  • Body text (first 200 chars): {body_text}", 'log')
+
+                # Check page title
+                title = soup.find('title')
+                if title:
+                    yield emit(f"  • Page title: {title.get_text(strip=True)}", 'log')
+
+                yield emit("", 'log')
+                raise ValueError(
+                    "Permit generation failed: Final submission returned HTTP 200 but no PDF links were found. "
+                    "The form may have validation errors or the submission may not have been processed."
+                )
 
             # Download and print PDFs
             for i, pdf_url in enumerate(pdf_links, 1):
