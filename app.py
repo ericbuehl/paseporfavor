@@ -128,7 +128,7 @@ HOME_TEMPLATE = """
         <div class="info">
             <strong>Account:</strong> {{ account_number }}<br>
             <strong>Name:</strong> {{ last_name }}<br>
-            <strong>Email:</strong> {{ email }}<br>
+            <strong>Email:</strong> <!--email_off-->{{ email }}<!--/email_off--><br>
             {% if dry_run %}
             <strong>Mode:</strong> Test mode - will not submit final request
             {% else %}
