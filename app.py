@@ -266,18 +266,6 @@ PROGRESS_TEMPLATE = """
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
-        .status-bar {
-            background: #2d2d2d;
-            padding: 14px 16px;
-            margin-top: 12px;
-            border-radius: 8px;
-            font-size: 14px;
-            flex-shrink: 0;
-        }
-        #status {
-            color: #4ec9b0;
-            font-weight: bold;
-        }
         .back-button {
             display: inline-block;
             margin-top: 14px;
@@ -317,30 +305,147 @@ PROGRESS_TEMPLATE = """
                 font-size: 10px;
             }
         }
+        .main-status {
+            background: #2d2d2d;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            text-align: center;
+        }
+        .status-emoji {
+            font-size: 48px;
+            margin-bottom: 12px;
+            display: block;
+        }
+        .status-text {
+            font-size: 18px;
+            color: #4ec9b0;
+            font-weight: bold;
+            margin-bottom: 8px;
+        }
+        .status-detail {
+            font-size: 14px;
+            color: #9cdcfe;
+        }
+        .log-toggle {
+            margin-top: 16px;
+            padding: 12px 20px;
+            background: #3e3e3e;
+            color: #9cdcfe;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .log-toggle:active {
+            background: #4e4e4e;
+        }
+        .log-toggle-icon {
+            transition: transform 0.3s;
+        }
+        .log-toggle-icon.expanded {
+            transform: rotate(180deg);
+        }
+        .log-container {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+        .log-container.expanded {
+            max-height: 60vh;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        .back-button {
+            display: inline-block;
+            margin-top: 16px;
+            padding: 14px 24px;
+            background: #0e639c;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .back-button:active {
+            background: #1177bb;
+            transform: scale(0.98);
+        }
+        @media (max-width: 480px) {
+            .status-emoji {
+                font-size: 40px;
+            }
+            .status-text {
+                font-size: 16px;
+            }
+            .status-detail {
+                font-size: 13px;
+            }
+        }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1><span class="spinner"></span>Generating Permits</h1>
+        <h1><span class="spinner" id="spinner"></span>Generating Permits</h1>
         <div class="subtitle">Requesting {{ permits }} permit(s)...</div>
     </div>
 
-    <div id="log"></div>
+    <div class="main-status">
+        <span class="status-emoji" id="statusEmoji">⏳</span>
+        <div class="status-text" id="statusText">Connecting...</div>
+        <div class="status-detail" id="statusDetail">Initializing request...</div>
+        <button class="log-toggle" id="logToggle" style="display: none;">
+            <span class="log-toggle-icon" id="toggleIcon">▼</span>
+            <span>Show Detailed Log</span>
+        </button>
+        <div id="backButtonContainer"></div>
+    </div>
 
-    <div class="status-bar">
-        <span id="status">Connecting...</span>
+    <div class="log-container" id="logContainer">
+        <div id="log"></div>
     </div>
 
     <script>
         const log = document.getElementById('log');
-        const status = document.getElementById('status');
+        const statusEmoji = document.getElementById('statusEmoji');
+        const statusText = document.getElementById('statusText');
+        const statusDetail = document.getElementById('statusDetail');
+        const logToggle = document.getElementById('logToggle');
+        const logContainer = document.getElementById('logContainer');
+        const toggleIcon = document.getElementById('toggleIcon');
+        const spinner = document.getElementById('spinner');
+        const backButtonContainer = document.getElementById('backButtonContainer');
+
         const eventSource = new EventSource('/stream?permits={{ permits }}');
 
         let lastMessageTime = Date.now();
+        let hasError = false;
+
+        // Show log toggle button after first message
+        let firstMessage = true;
+
+        logToggle.addEventListener('click', function() {
+            logContainer.classList.toggle('expanded');
+            toggleIcon.classList.toggle('expanded');
+            logToggle.querySelector('span:last-child').textContent =
+                logContainer.classList.contains('expanded') ? 'Hide Detailed Log' : 'Show Detailed Log';
+        });
 
         eventSource.onmessage = function(event) {
             lastMessageTime = Date.now();
             const data = JSON.parse(event.data);
+
+            if (firstMessage) {
+                logToggle.style.display = 'inline-flex';
+                firstMessage = false;
+            }
 
             if (data.type === 'log') {
                 const now = new Date();
@@ -351,6 +456,7 @@ PROGRESS_TEMPLATE = """
                     className += ' success';
                 } else if (data.message.includes('✗') || data.message.includes('Error')) {
                     className += ' error';
+                    hasError = true;
                 } else if (data.message.includes('[') && data.message.includes(']')) {
                     className += ' step';
                 } else {
@@ -360,26 +466,44 @@ PROGRESS_TEMPLATE = """
                 log.innerHTML += `<div class="${className}"><span class="timestamp">${timestamp}</span>${data.message}</div>`;
                 log.scrollTop = log.scrollHeight;
             } else if (data.type === 'status') {
-                status.textContent = data.message;
+                statusText.textContent = data.message;
+                statusDetail.textContent = 'Processing...';
             } else if (data.type === 'complete') {
-                status.textContent = '✓ Complete!';
-                document.querySelector('.spinner').style.display = 'none';
+                if (hasError) {
+                    statusEmoji.textContent = '❌';
+                    statusText.textContent = 'Request Failed';
+                    statusDetail.textContent = 'Click "Show Detailed Log" below to see what went wrong';
+                    logToggle.style.background = '#ff6b6b';
+                    logToggle.style.color = 'white';
+                } else {
+                    statusEmoji.textContent = '✅';
+                    statusText.textContent = 'Success!';
+                    statusDetail.textContent = 'Permits generated successfully';
+                }
+                spinner.style.display = 'none';
                 eventSource.close();
 
                 // Add back button
-                const statusBar = document.querySelector('.status-bar');
-                statusBar.innerHTML += '<br><a href="/" class="back-button">← Back to Home</a>';
+                backButtonContainer.innerHTML = '<a href="/" class="back-button">← Back to Home</a>';
             } else if (data.type === 'error') {
-                status.textContent = '✗ Error: ' + data.message;
-                status.className = 'error';
+                statusEmoji.textContent = '❌';
+                statusText.textContent = 'Error';
+                statusDetail.textContent = data.message;
+                spinner.style.display = 'none';
+                hasError = true;
+                logToggle.style.background = '#ff6b6b';
+                logToggle.style.color = 'white';
                 eventSource.close();
             }
         };
 
         eventSource.onerror = function() {
             if (Date.now() - lastMessageTime > 2000) {
-                status.textContent = '✗ Connection lost';
-                status.className = 'error';
+                statusEmoji.textContent = '❌';
+                statusText.textContent = 'Connection Lost';
+                statusDetail.textContent = 'The connection to the server was interrupted';
+                spinner.style.display = 'none';
+                hasError = true;
                 eventSource.close();
             }
         };
@@ -387,7 +511,7 @@ PROGRESS_TEMPLATE = """
         // Keep connection alive check
         setInterval(() => {
             if (Date.now() - lastMessageTime > 30000) {
-                status.textContent = '⚠ No updates for 30 seconds...';
+                statusDetail.textContent = '⚠ No updates for 30 seconds...';
             }
         }, 5000);
     </script>
