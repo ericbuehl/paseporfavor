@@ -24,45 +24,61 @@ HOME_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Santa Monica Permit Request</title>
     <style>
+        * {
+            box-sizing: border-box;
+        }
         body {
-            font-family: Arial, sans-serif;
-            max-width: 600px;
-            margin: 50px auto;
-            padding: 20px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            margin: 0;
+            padding: 0;
             background: #f5f5f5;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
         .container {
             background: white;
-            padding: 30px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 480px;
+            margin: 16px;
         }
         h1 {
             color: #1976d2;
-            margin-bottom: 10px;
+            margin: 0 0 8px 0;
+            font-size: 28px;
+            line-height: 1.2;
         }
         .subtitle {
             color: #666;
-            margin-bottom: 30px;
+            margin-bottom: 32px;
+            font-size: 16px;
         }
         .form-group {
-            margin-bottom: 20px;
+            margin-bottom: 24px;
         }
         label {
             display: block;
-            margin-bottom: 8px;
-            font-weight: bold;
+            margin-bottom: 12px;
+            font-weight: 600;
             color: #333;
+            font-size: 18px;
         }
         input[type="number"] {
             width: 100%;
-            padding: 10px;
+            padding: 16px;
             border: 2px solid #ddd;
-            border-radius: 4px;
-            font-size: 16px;
-            box-sizing: border-box;
+            border-radius: 8px;
+            font-size: 20px;
+            -webkit-appearance: none;
+            appearance: none;
         }
         input[type="number"]:focus {
             outline: none;
@@ -70,39 +86,59 @@ HOME_TEMPLATE = """
         }
         .go-button {
             width: 100%;
-            padding: 15px;
+            padding: 20px;
             background: #1976d2;
             color: white;
             border: none;
-            border-radius: 4px;
-            font-size: 18px;
+            border-radius: 8px;
+            font-size: 22px;
             font-weight: bold;
             cursor: pointer;
-            transition: background 0.3s;
-        }
-        .go-button:hover {
-            background: #1565c0;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
         }
         .go-button:active {
             background: #0d47a1;
+            transform: scale(0.98);
         }
         .info {
             background: #e3f2fd;
-            padding: 15px;
-            border-radius: 4px;
-            margin-top: 20px;
-            font-size: 14px;
+            padding: 16px;
+            border-radius: 8px;
+            margin-top: 24px;
+            font-size: 15px;
             color: #1565c0;
+            line-height: 1.6;
+        }
+        .info strong {
+            display: inline-block;
+            min-width: 90px;
         }
         .dry-run-badge {
             display: inline-block;
             background: #ff9800;
             color: white;
-            padding: 5px 10px;
-            border-radius: 4px;
-            font-size: 12px;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 13px;
             font-weight: bold;
-            margin-left: 10px;
+            margin-top: 8px;
+            vertical-align: middle;
+        }
+        @media (max-width: 480px) {
+            .container {
+                margin: 8px;
+                padding: 20px;
+            }
+            h1 {
+                font-size: 24px;
+            }
+            .dry-run-badge {
+                display: block;
+                margin-top: 8px;
+                margin-left: 0;
+                text-align: center;
+            }
         }
     </style>
 </head>
@@ -145,43 +181,57 @@ PROGRESS_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Generating Permits...</title>
     <style>
+        * {
+            box-sizing: border-box;
+        }
         body {
-            font-family: 'Courier New', monospace;
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Mono', 'Courier New', monospace;
             background: #1e1e1e;
             color: #d4d4d4;
             margin: 0;
-            padding: 20px;
+            padding: 12px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
         }
         .header {
             background: #2d2d2d;
-            padding: 20px;
+            padding: 16px;
             border-radius: 8px;
-            margin-bottom: 20px;
+            margin-bottom: 12px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            flex-shrink: 0;
         }
         h1 {
             margin: 0;
             color: #4ec9b0;
-            font-size: 24px;
+            font-size: 20px;
+            line-height: 1.3;
         }
         .subtitle {
             color: #9cdcfe;
-            margin-top: 5px;
+            margin-top: 6px;
+            font-size: 14px;
         }
         #log {
             background: #1e1e1e;
-            padding: 20px;
+            padding: 12px;
             border-radius: 8px;
             border: 2px solid #3e3e3e;
-            min-height: 400px;
             white-space: pre-wrap;
-            font-size: 14px;
-            line-height: 1.6;
+            word-wrap: break-word;
+            font-size: 13px;
+            line-height: 1.5;
+            overflow-y: auto;
+            flex-grow: 1;
+            -webkit-overflow-scrolling: touch;
         }
         .log-line {
-            margin-bottom: 5px;
+            margin-bottom: 4px;
         }
         .step {
             color: #569cd6;
@@ -198,17 +248,19 @@ PROGRESS_TEMPLATE = """
         }
         .timestamp {
             color: #6a9955;
-            margin-right: 10px;
+            margin-right: 8px;
+            font-size: 11px;
         }
         .spinner {
             display: inline-block;
-            width: 12px;
-            height: 12px;
+            width: 14px;
+            height: 14px;
             border: 2px solid #3e3e3e;
             border-top: 2px solid #4ec9b0;
             border-radius: 50%;
             animation: spin 1s linear infinite;
             margin-right: 8px;
+            vertical-align: middle;
         }
         @keyframes spin {
             0% { transform: rotate(0deg); }
@@ -216,10 +268,11 @@ PROGRESS_TEMPLATE = """
         }
         .status-bar {
             background: #2d2d2d;
-            padding: 15px 20px;
-            margin-top: 20px;
+            padding: 14px 16px;
+            margin-top: 12px;
             border-radius: 8px;
             font-size: 14px;
+            flex-shrink: 0;
         }
         #status {
             color: #4ec9b0;
@@ -227,16 +280,42 @@ PROGRESS_TEMPLATE = """
         }
         .back-button {
             display: inline-block;
-            margin-top: 20px;
-            padding: 10px 20px;
+            margin-top: 14px;
+            padding: 14px 24px;
             background: #0e639c;
             color: white;
             text-decoration: none;
-            border-radius: 4px;
-            transition: background 0.3s;
+            border-radius: 8px;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+            font-size: 16px;
+            font-weight: 600;
         }
-        .back-button:hover {
+        .back-button:active {
             background: #1177bb;
+            transform: scale(0.98);
+        }
+        @media (max-width: 480px) {
+            body {
+                padding: 8px;
+            }
+            .header {
+                padding: 12px;
+            }
+            h1 {
+                font-size: 18px;
+            }
+            .subtitle {
+                font-size: 13px;
+            }
+            #log {
+                font-size: 12px;
+                padding: 10px;
+            }
+            .timestamp {
+                display: block;
+                font-size: 10px;
+            }
         }
     </style>
 </head>
