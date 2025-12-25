@@ -36,6 +36,7 @@ select = [
 ignore = [
     "E501",   # line too long (handled by formatter)
     "RUF001", # ambiguous unicode characters (intentional for better UX)
+    "RUF006", # asyncio.create_task without storing reference (fire-and-forget is intentional)
 ]
 
 [tool.ruff.format]

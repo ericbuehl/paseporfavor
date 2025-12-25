@@ -396,6 +396,38 @@ input[type="number"]:focus {
     font-size: 11px;
 }
 
+.download-links {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 16px;
+    margin-bottom: 16px;
+}
+
+.download-link {
+    display: block;
+    padding: 14px 24px;
+    background: var(--color-success);
+    color: var(--text-inverse);
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 600;
+    text-decoration: none;
+    text-align: center;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    transition: transform 0.1s, opacity 0.2s;
+}
+
+.download-link:hover {
+    opacity: 0.9;
+}
+
+.download-link:active {
+    transform: scale(0.98);
+}
+
 .back-button {
     display: inline-block;
     margin-top: 16px;

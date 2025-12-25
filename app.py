@@ -4,15 +4,18 @@ FastAPI web service for Santa Monica parking permit automation.
 
 import asyncio
 import json
+import os
 import re
 import traceback
 from collections.abc import AsyncGenerator
 from datetime import date
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 import uvicorn
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from main import SantaMonicaPermitAutomation
@@ -22,6 +25,50 @@ app = FastAPI(title="Santa Monica Permit Automation")
 
 # Mount static files directory
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+async def schedule_file_deletion(file_path: str, delay_seconds: int = 600):
+    """
+    Schedule a file for deletion after a delay.
+
+    Args:
+        file_path: Path to the file to delete
+        delay_seconds: Delay before deletion (default 600 = 10 minutes)
+    """
+    await asyncio.sleep(delay_seconds)
+    try:
+        if os.path.exists(file_path):
+            os.unlink(file_path)
+    except Exception:
+        pass  # Silently ignore deletion errors
+
+
+def save_permit_to_temp(pdf_bytes: bytes, permit_number: int | str) -> str:
+    """
+    Save permit PDF to temporary file and schedule cleanup.
+
+    Args:
+        pdf_bytes: PDF file content
+        permit_number: Permit number/identifier for filename
+
+    Returns:
+        Temporary filename (not full path)
+    """
+    with NamedTemporaryFile(
+        mode='wb',
+        suffix='.pdf',
+        prefix=f'permit_{permit_number}_',
+        delete=False,
+        dir='/tmp'
+    ) as tmp_file:
+        tmp_file.write(pdf_bytes)
+        temp_file_path = tmp_file.name
+        temp_file_name = Path(temp_file_path).name
+
+        # Schedule deletion after 10 minutes
+        asyncio.create_task(schedule_file_deletion(temp_file_path, 600))
+
+        return temp_file_name
 
 # HTML template inline (can move to separate file later)
 HOME_TEMPLATE = """
@@ -186,13 +233,32 @@ PROGRESS_TEMPLATE = """
                     statusEmoji.textContent = '✅';
                     statusText.textContent = 'Success!';
                     statusDetail.textContent = data.message || 'Permits generated successfully';
+
+                    // Add download links if files are available
+                    if (data.files && data.files.length > 0) {
+                        const downloadLinks = document.createElement('div');
+                        downloadLinks.className = 'download-links';
+                        data.files.forEach((filename, index) => {
+                            const link = document.createElement('a');
+                            link.href = `/download/${filename}`;
+                            link.className = 'download-link';
+                            link.textContent = `📄 Download Permit ${index + 1}`;
+                            link.download = `santa-monica-permit-${index + 1}.pdf`;
+                            downloadLinks.appendChild(link);
+                        });
+                        backButtonContainer.appendChild(downloadLinks);
+                    }
                 }
                 spinner.style.display = 'none';
                 eventSource.close();
                 if (keepAliveInterval) clearInterval(keepAliveInterval);
 
                 // Add back button
-                backButtonContainer.innerHTML = '<a href="/" class="back-button">← Back to Home</a>';
+                const backBtn = document.createElement('a');
+                backBtn.href = '/';
+                backBtn.className = 'back-button';
+                backBtn.textContent = '← Back to Home';
+                backButtonContainer.appendChild(backBtn);
             } else if (data.type === 'error') {
                 statusEmoji.textContent = '❌';
                 statusText.textContent = 'Error';
@@ -276,10 +342,12 @@ async def generate_permits_stream(
         user_email: Override email (e.g. from Cloudflare Access), falls back to settings
     """
 
-    async def emit(message: str, event_type: str = 'log'):
+    async def emit(message: str, event_type: str = 'log', files: list[str] | None = None):
         """Emit a Server-Sent Event."""
-        data = json.dumps({'type': event_type, 'message': message})
-        yield f"data: {data}\n\n"
+        data = {'type': event_type, 'message': message}
+        if files:
+            data['files'] = files
+        yield f"data: {json.dumps(data)}\n\n"
 
     try:
         # Use provided email or fall back to settings
@@ -393,22 +461,26 @@ async def generate_permits_stream(
                 yield emit("DRY-RUN: Stopping before final submission", 'log')
                 yield emit("", 'log')
 
-                # Print test permit
-                if auto_print:
-                    yield emit("[Test] Printing demo permit...", 'log')
-                    yield emit("Printing demo", 'status')
+                # Download test PDF from Wikipedia
+                test_pdf_url = "https://upload.wikimedia.org/wikipedia/commons/d/d3/Test.pdf"
+                temp_files = []
 
-                    # Download test PDF from Wikipedia
-                    test_pdf_url = "https://upload.wikimedia.org/wikipedia/commons/d/d3/Test.pdf"
+                try:
+                    yield emit("[Test] Downloading demo permit...", 'log')
+                    response = await automation.client.get(test_pdf_url)
+                    response.raise_for_status()
 
-                    try:
-                        yield emit("  • Downloading test PDF from Wikipedia...", 'log')
-                        response = await automation.client.get(test_pdf_url)
-                        response.raise_for_status()
+                    test_pdf_bytes = response.content
+                    yield emit(f"  ✓ Test PDF downloaded ({len(test_pdf_bytes)} bytes)", 'log')
 
-                        test_pdf_bytes = response.content
-                        yield emit(f"  ✓ Test PDF downloaded ({len(test_pdf_bytes)} bytes)", 'log')
+                    # Save to temporary file
+                    temp_file_name = save_permit_to_temp(test_pdf_bytes, 'test')
+                    temp_files.append(temp_file_name)
+                    yield emit(f"  ✓ Saved as {temp_file_name}", 'log')
 
+                    # Print test permit if enabled
+                    if auto_print:
+                        yield emit(f"  📄 Printing demo permit to {settings.printer_name}...", 'log')
                         print_success = await automation.print_pdf(
                             test_pdf_bytes, settings.printer_name
                         )
@@ -419,13 +491,13 @@ async def generate_permits_stream(
                             )
                         else:
                             yield emit("  ✗ Failed to print demo permit", 'log')
-                    except Exception as e:
-                        yield emit(f"  ✗ Failed to download test PDF: {e}", 'log')
+                except Exception as e:
+                    yield emit(f"  ✗ Failed to download test PDF: {e}", 'log')
 
                 yield emit("=" * 60, 'log')
                 yield emit("Dry-run test completed successfully!", 'log')
                 yield emit("Complete", 'status')
-                yield emit("", 'complete')
+                yield emit("Generated 1 test permit", 'complete', files=temp_files)
                 return
 
             # Step 4: Parse permit details form
@@ -599,6 +671,7 @@ async def generate_permits_stream(
             # Download and print PDFs
             print_success_count = 0
             print_failure_count = 0
+            temp_files = []
 
             for i, pdf_url in enumerate(pdf_links, 1):
                 yield emit(f"Downloading permit {i}/{len(pdf_links)}...", 'log')
@@ -606,6 +679,11 @@ async def generate_permits_stream(
 
                 pdf_bytes = await automation.download_permit_pdf(pdf_url)
                 yield emit(f"  ✓ Downloaded permit {i} ({len(pdf_bytes)} bytes)", 'log')
+
+                # Save to temporary file
+                temp_file_name = save_permit_to_temp(pdf_bytes, i)
+                temp_files.append(temp_file_name)
+                yield emit(f"  ✓ Saved as {temp_file_name}", 'log')
 
                 if auto_print:
                     yield emit(f"  📄 Printing permit {i} to {settings.printer_name}...", 'log')
@@ -637,7 +715,7 @@ async def generate_permits_stream(
 
             yield emit("=" * 60, 'log')
             yield emit("Complete!", 'status')
-            yield emit(final_message, 'complete')
+            yield emit(final_message, 'complete', files=temp_files)
 
     except Exception as e:
         yield emit(f"Error: {e!s}", 'error')
@@ -669,6 +747,30 @@ async def stream_progress(request: Request, permits: int = 1, auto_print: str = 
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",  # Disable nginx buffering
         }
+    )
+
+
+@app.get("/download/{filename}")
+async def download_permit(filename: str):
+    """
+    Download a temporary permit PDF file.
+    Files are automatically deleted after 10 minutes.
+    """
+    # Sanitize filename to prevent directory traversal
+    safe_filename = Path(filename).name
+    file_path = Path("/tmp") / safe_filename
+
+    # Only allow files that start with 'permit_' for security
+    if not safe_filename.startswith('permit_') or not safe_filename.endswith('.pdf'):
+        return {"error": "Invalid filename"}
+
+    if not file_path.exists():
+        return {"error": "File not found or has expired"}
+
+    return FileResponse(
+        path=file_path,
+        media_type="application/pdf",
+        filename=f"santa-monica-permit-{safe_filename}",
     )
 
 
