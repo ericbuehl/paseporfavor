@@ -28,7 +28,6 @@ class Settings(BaseSettings):
     # Printer configuration (optional)
     printer_ip: str | None = None
     printer_name: str = "AutoPrinter"
-    auto_print: bool = False
 
     # Mode configuration
     dry_run: bool = True

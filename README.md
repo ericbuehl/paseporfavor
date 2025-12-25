@@ -33,11 +33,12 @@ EMAIL=your-email@example.com
 # Optional settings
 PRINTER_IP=192.168.1.100
 PRINTER_NAME=AutoPrinter
-AUTO_PRINT=true
 DRY_RUN=true  # Set false for production
 ```
 
-**Note:** The application will not start if required fields are missing.
+**Note:**
+- The application will not start if required fields are missing.
+- Auto-print can be toggled per request in the web UI (defaults to ON).
 
 ### Getting Google Cloud Credentials
 

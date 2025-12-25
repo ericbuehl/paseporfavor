@@ -13,11 +13,15 @@ import uvicorn
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from main import SantaMonicaPermitAutomation
 from settings import settings
 
 app = FastAPI(title="Santa Monica Permit Automation")
+
+# Mount static files directory
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # HTML template inline (can move to separate file later)
 HOME_TEMPLATE = """
@@ -26,133 +30,26 @@ HOME_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="color-scheme" content="light dark">
     <title>Santa Monica Permit Request</title>
-    <style>
-        * {
-            box-sizing: border-box;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-            margin: 0;
-            padding: 0;
-            background: #f5f5f5;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .container {
-            background: white;
-            padding: 24px;
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            width: 100%;
-            max-width: 480px;
-            margin: 16px;
-        }
-        h1 {
-            color: #1976d2;
-            margin: 0 0 8px 0;
-            font-size: 28px;
-            line-height: 1.2;
-        }
-        .subtitle {
-            color: #666;
-            margin-bottom: 32px;
-            font-size: 16px;
-        }
-        .form-group {
-            margin-bottom: 24px;
-        }
-        label {
-            display: block;
-            margin-bottom: 12px;
-            font-weight: 600;
-            color: #333;
-            font-size: 18px;
-        }
-        input[type="number"] {
-            width: 100%;
-            padding: 16px;
-            border: 2px solid #ddd;
-            border-radius: 8px;
-            font-size: 20px;
-            -webkit-appearance: none;
-            appearance: none;
-        }
-        input[type="number"]:focus {
-            outline: none;
-            border-color: #1976d2;
-        }
-        .go-button {
-            width: 100%;
-            padding: 20px;
-            background: #1976d2;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 22px;
-            font-weight: bold;
-            cursor: pointer;
-            -webkit-tap-highlight-color: transparent;
-            touch-action: manipulation;
-        }
-        .go-button:active {
-            background: #0d47a1;
-            transform: scale(0.98);
-        }
-        .info {
-            background: #e3f2fd;
-            padding: 16px;
-            border-radius: 8px;
-            margin-top: 24px;
-            font-size: 15px;
-            color: #1565c0;
-            line-height: 1.6;
-        }
-        .info strong {
-            display: inline-block;
-            min-width: 90px;
-        }
-        .dry-run-badge {
-            display: inline-block;
-            background: #ff9800;
-            color: white;
-            padding: 6px 12px;
-            border-radius: 6px;
-            font-size: 13px;
-            font-weight: bold;
-            margin-top: 8px;
-            vertical-align: middle;
-        }
-        @media (max-width: 480px) {
-            .container {
-                margin: 8px;
-                padding: 20px;
-            }
-            h1 {
-                font-size: 24px;
-            }
-            .dry-run-badge {
-                display: block;
-                margin-top: 8px;
-                margin-left: 0;
-                text-align: center;
-            }
-        }
-    </style>
+    <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body>
+<body class="home-container">
     <div class="container">
         <h1>
             Santa Monica Permit Request
-            {% if dry_run %}
-            <span class="dry-run-badge">DRY-RUN MODE</span>
-            {% endif %}
         </h1>
+        <div class="badges">
+            {% if dry_run %}
+            <span class="badge badge-warning">DRY-RUN MODE</span>
+            {% endif %}
+            <span class="badge badge-info badge-toggle" id="autoPrintBadge">AUTO-PRINT ON</span>
+        </div>
         <p class="subtitle">Request temporary parking permits</p>
 
         <form action="/generate" method="post" id="permitForm">
+            <input type="hidden" id="autoPrint" name="auto_print" value="true">
+
             <div class="form-group">
                 <label for="permits">Number of Permits:</label>
                 <input type="number" id="permits" name="permits" min="1" max="5" value="1" required>
@@ -164,15 +61,30 @@ HOME_TEMPLATE = """
         <div class="info">
             <strong>Account:</strong> {{ account_number }}<br>
             <strong>Name:</strong> {{ last_name }}<br>
-            <strong>Email:</strong> <!--email_off-->{{ email }}<!--/email_off--><br>
-            {% if dry_run %}
-            <strong>Mode:</strong> Test mode - will not submit final request
-            {% else %}
-            <strong>Auto-Print:</strong> {{ auto_print }}
-            {% endif %}
+            <strong>Email:</strong> <!--email_off-->{{ email }}<!--/email_off-->
         </div>
     </div>
 
+    <script>
+        const autoPrintBadge = document.getElementById('autoPrintBadge');
+        const autoPrintInput = document.getElementById('autoPrint');
+
+        autoPrintBadge.addEventListener('click', function() {
+            const isEnabled = autoPrintInput.value === 'true';
+
+            if (isEnabled) {
+                autoPrintInput.value = 'false';
+                autoPrintBadge.textContent = 'AUTO-PRINT OFF';
+                autoPrintBadge.classList.remove('badge-info');
+                autoPrintBadge.classList.add('badge-secondary');
+            } else {
+                autoPrintInput.value = 'true';
+                autoPrintBadge.textContent = 'AUTO-PRINT ON';
+                autoPrintBadge.classList.remove('badge-secondary');
+                autoPrintBadge.classList.add('badge-info');
+            }
+        });
+    </script>
 </body>
 </html>
 """
@@ -183,215 +95,11 @@ PROGRESS_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="color-scheme" content="light dark">
     <title>Generating Permits...</title>
-    <style>
-        * {
-            box-sizing: border-box;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'SF Mono', 'Courier New', monospace;
-            background: #1e1e1e;
-            color: #d4d4d4;
-            margin: 0;
-            padding: 12px;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-        .header {
-            background: #2d2d2d;
-            padding: 16px;
-            border-radius: 8px;
-            margin-bottom: 12px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-            flex-shrink: 0;
-        }
-        h1 {
-            margin: 0;
-            color: #4ec9b0;
-            font-size: 20px;
-            line-height: 1.3;
-        }
-        .subtitle {
-            color: #9cdcfe;
-            margin-top: 6px;
-            font-size: 14px;
-        }
-        #log {
-            background: #1e1e1e;
-            padding: 12px;
-            border-radius: 8px;
-            border: 2px solid #3e3e3e;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-            font-size: 13px;
-            line-height: 1.5;
-            overflow-y: auto;
-            flex-grow: 1;
-            -webkit-overflow-scrolling: touch;
-        }
-        .log-line {
-            margin-bottom: 4px;
-        }
-        .step {
-            color: #569cd6;
-            font-weight: bold;
-        }
-        .success {
-            color: #4ec9b0;
-        }
-        .error {
-            color: #f48771;
-        }
-        .info {
-            color: #9cdcfe;
-        }
-        .timestamp {
-            color: #6a9955;
-            margin-right: 8px;
-            font-size: 11px;
-        }
-        .spinner {
-            display: inline-block;
-            width: 14px;
-            height: 14px;
-            border: 2px solid #3e3e3e;
-            border-top: 2px solid #4ec9b0;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin-right: 8px;
-            vertical-align: middle;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        .back-button {
-            display: inline-block;
-            margin-top: 14px;
-            padding: 14px 24px;
-            background: #0e639c;
-            color: white;
-            text-decoration: none;
-            border-radius: 8px;
-            -webkit-tap-highlight-color: transparent;
-            touch-action: manipulation;
-            font-size: 16px;
-            font-weight: 600;
-        }
-        .back-button:active {
-            background: #1177bb;
-            transform: scale(0.98);
-        }
-        @media (max-width: 480px) {
-            body {
-                padding: 8px;
-            }
-            .header {
-                padding: 12px;
-            }
-            h1 {
-                font-size: 18px;
-            }
-            .subtitle {
-                font-size: 13px;
-            }
-            #log {
-                font-size: 12px;
-                padding: 10px;
-            }
-            .timestamp {
-                display: block;
-                font-size: 10px;
-            }
-        }
-        .main-status {
-            background: #2d2d2d;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 12px;
-            text-align: center;
-        }
-        .status-emoji {
-            font-size: 48px;
-            margin-bottom: 12px;
-            display: block;
-        }
-        .status-text {
-            font-size: 18px;
-            color: #4ec9b0;
-            font-weight: bold;
-            margin-bottom: 8px;
-        }
-        .status-detail {
-            font-size: 14px;
-            color: #9cdcfe;
-        }
-        .log-toggle {
-            margin-top: 16px;
-            padding: 12px 20px;
-            background: #3e3e3e;
-            color: #9cdcfe;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 14px;
-            -webkit-tap-highlight-color: transparent;
-            touch-action: manipulation;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .log-toggle:active {
-            background: #4e4e4e;
-        }
-        .log-toggle-icon {
-            transition: transform 0.3s;
-        }
-        .log-toggle-icon.expanded {
-            transform: rotate(180deg);
-        }
-        .log-container {
-            max-height: 0;
-            overflow: hidden;
-            transition: max-height 0.3s ease-out;
-        }
-        .log-container.expanded {
-            max-height: 60vh;
-            overflow-y: auto;
-            -webkit-overflow-scrolling: touch;
-        }
-        .back-button {
-            display: inline-block;
-            margin-top: 16px;
-            padding: 14px 24px;
-            background: #0e639c;
-            color: white;
-            text-decoration: none;
-            border-radius: 8px;
-            -webkit-tap-highlight-color: transparent;
-            touch-action: manipulation;
-            font-size: 16px;
-            font-weight: 600;
-        }
-        .back-button:active {
-            background: #1177bb;
-            transform: scale(0.98);
-        }
-        @media (max-width: 480px) {
-            .status-emoji {
-                font-size: 40px;
-            }
-            .status-text {
-                font-size: 16px;
-            }
-            .status-detail {
-                font-size: 13px;
-            }
-        }
-    </style>
+    <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body>
+<body class="progress-container">
     <div class="header">
         <h1><span class="spinner" id="spinner"></span>Generating Permits</h1>
         <div class="subtitle">Requesting {{ permits }} permit(s)...</div>
@@ -423,7 +131,7 @@ PROGRESS_TEMPLATE = """
         const spinner = document.getElementById('spinner');
         const backButtonContainer = document.getElementById('backButtonContainer');
 
-        const eventSource = new EventSource('/stream?permits={{ permits }}');
+        const eventSource = new EventSource('/stream?permits={{ permits }}&auto_print={{ auto_print }}');
 
         let lastMessageTime = Date.now();
         let hasError = false;
@@ -473,15 +181,15 @@ PROGRESS_TEMPLATE = """
                     statusEmoji.textContent = '❌';
                     statusText.textContent = 'Request Failed';
                     statusDetail.textContent = 'Click "Show Detailed Log" below to see what went wrong';
-                    logToggle.style.background = '#ff6b6b';
-                    logToggle.style.color = 'white';
+                    logToggle.classList.add('error-state');
                 } else {
                     statusEmoji.textContent = '✅';
                     statusText.textContent = 'Success!';
-                    statusDetail.textContent = 'Permits generated successfully';
+                    statusDetail.textContent = data.message || 'Permits generated successfully';
                 }
                 spinner.style.display = 'none';
                 eventSource.close();
+                if (keepAliveInterval) clearInterval(keepAliveInterval);
 
                 // Add back button
                 backButtonContainer.innerHTML = '<a href="/" class="back-button">← Back to Home</a>';
@@ -491,9 +199,9 @@ PROGRESS_TEMPLATE = """
                 statusDetail.textContent = data.message;
                 spinner.style.display = 'none';
                 hasError = true;
-                logToggle.style.background = '#ff6b6b';
-                logToggle.style.color = 'white';
+                logToggle.classList.add('error-state');
                 eventSource.close();
+                if (keepAliveInterval) clearInterval(keepAliveInterval);
             }
         };
 
@@ -505,11 +213,12 @@ PROGRESS_TEMPLATE = """
                 spinner.style.display = 'none';
                 hasError = true;
                 eventSource.close();
+                if (keepAliveInterval) clearInterval(keepAliveInterval);
             }
         };
 
         // Keep connection alive check
-        setInterval(() => {
+        const keepAliveInterval = setInterval(() => {
             if (Date.now() - lastMessageTime > 30000) {
                 statusDetail.textContent = '⚠ No updates for 30 seconds...';
             }
@@ -528,44 +237,42 @@ async def home(request: Request):
     last_name = settings.last_name
     # Use Cloudflare Access authenticated email if available, otherwise use settings
     email = request.headers.get("cf-access-authenticated-user-email", settings.email)
-    auto_print = settings.auto_print
 
-    # Simple template rendering (we'll use jinja2 for proper template support)
+    # Simple template rendering
     html = HOME_TEMPLATE
     html = html.replace('{{ account_number }}', str(account_number))
     html = html.replace('{{ last_name }}', str(last_name))
     html = html.replace('{{ email }}', str(email))
-    html = html.replace('{{ auto_print }}', 'Yes' if auto_print else 'No')
 
     # Handle conditional dry_run badge
     if dry_run:
-        html = html.replace('{% if dry_run %}', '')
-        html = html.replace('{% endif %}', '')
-        html = html.replace('{% else %}', '<!--')
-        html = html.replace('{% if dry_run %}', '<!--')
+        html = html.replace('{% if dry_run %}', '').replace('{% endif %}', '', 1)
     else:
-        html = html.replace('{% if dry_run %}', '<!--')
-        html = html.replace('{% else %}', '')
-        html = html.replace('{% endif %}', '-->')
+        # Remove the dry_run badge section
+        start = html.find('{% if dry_run %}')
+        end = html.find('{% endif %}', start) + len('{% endif %}')
+        html = html[:start] + html[end:]
 
     return HTMLResponse(content=html)
 
 
 @app.post("/generate", response_class=HTMLResponse)
-async def generate_page(permits: int = Form(1)):
+async def generate_page(permits: int = Form(1), auto_print: str = Form("true")):
     """Progress page that streams permit generation."""
     html = PROGRESS_TEMPLATE.replace('{{ permits }}', str(permits))
+    html = html.replace('{{ auto_print }}', auto_print)
     return HTMLResponse(content=html)
 
 
 async def generate_permits_stream(
-    num_permits: int, user_email: str | None = None
+    num_permits: int, auto_print: bool = True, user_email: str | None = None
 ) -> AsyncGenerator[str]:
     """
     Generator that yields Server-Sent Events with progress updates.
 
     Args:
         num_permits: Number of permits to generate
+        auto_print: Whether to automatically print permits (default True)
         user_email: Override email (e.g. from Cloudflare Access), falls back to settings
     """
 
@@ -687,7 +394,7 @@ async def generate_permits_stream(
                 yield emit("", 'log')
 
                 # Print test permit
-                if settings.auto_print:
+                if auto_print:
                     yield emit("[Test] Printing demo permit...", 'log')
                     yield emit("Printing demo", 'status')
 
@@ -890,6 +597,9 @@ async def generate_permits_stream(
                 )
 
             # Download and print PDFs
+            print_success_count = 0
+            print_failure_count = 0
+
             for i, pdf_url in enumerate(pdf_links, 1):
                 yield emit(f"Downloading permit {i}/{len(pdf_links)}...", 'log')
                 yield emit(f"Downloading permit {i}", 'status')
@@ -897,23 +607,37 @@ async def generate_permits_stream(
                 pdf_bytes = await automation.download_permit_pdf(pdf_url)
                 yield emit(f"  ✓ Downloaded permit {i} ({len(pdf_bytes)} bytes)", 'log')
 
-                if settings.auto_print:
+                if auto_print:
                     yield emit(f"  📄 Printing permit {i} to {settings.printer_name}...", 'log')
                     print_success = await automation.print_pdf(pdf_bytes, settings.printer_name)
 
                     if print_success:
                         yield emit("  ✓ Print job submitted successfully", 'log')
+                        print_success_count += 1
                     else:
                         yield emit("  ✗ Print job failed", 'log')
+                        print_failure_count += 1
 
                 yield emit("", 'log')
 
             yield emit("=" * 60, 'log')
             yield emit("Workflow completed successfully!", 'log')
-            yield emit(f"Generated {len(pdf_links)} permit(s)", 'log')
+
+            # Determine final status message
+            if auto_print:
+                if print_failure_count == 0:
+                    final_message = f"Generated and printed {len(pdf_links)} permit(s)"
+                    yield emit(final_message, 'log')
+                else:
+                    final_message = f"Generated {len(pdf_links)} permit(s): {print_success_count} printed, {print_failure_count} failed to print"
+                    yield emit(final_message, 'log')
+            else:
+                final_message = f"Generated {len(pdf_links)} permit(s)"
+                yield emit(final_message, 'log')
+
             yield emit("=" * 60, 'log')
             yield emit("Complete!", 'status')
-            yield emit("", 'complete')
+            yield emit(final_message, 'complete')
 
     except Exception as e:
         yield emit(f"Error: {e!s}", 'error')
@@ -921,15 +645,18 @@ async def generate_permits_stream(
 
 
 @app.get("/stream")
-async def stream_progress(request: Request, permits: int = 1):
+async def stream_progress(request: Request, permits: int = 1, auto_print: str = "true"):
     """
     Server-Sent Events endpoint for streaming progress.
     """
     # Extract email from Cloudflare Access header if present
     user_email = request.headers.get("cf-access-authenticated-user-email")
 
+    # Convert string to boolean
+    auto_print_bool = auto_print.lower() == "true"
+
     async def event_generator():
-        async for event in generate_permits_stream(permits, user_email):
+        async for event in generate_permits_stream(permits, auto_print_bool, user_email):
             async for chunk in event:
                 yield chunk
             await asyncio.sleep(0.01)  # Small delay for smooth streaming
