@@ -27,48 +27,6 @@ app = FastAPI(title="Santa Monica Permit Automation")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
-async def schedule_file_deletion(file_path: str, delay_seconds: int = 600):
-    """
-    Schedule a file for deletion after a delay.
-
-    Args:
-        file_path: Path to the file to delete
-        delay_seconds: Delay before deletion (default 600 = 10 minutes)
-    """
-    await asyncio.sleep(delay_seconds)
-    try:
-        if os.path.exists(file_path):
-            os.unlink(file_path)
-    except Exception:
-        pass  # Silently ignore deletion errors
-
-
-def save_permit_to_temp(pdf_bytes: bytes, permit_number: int | str) -> str:
-    """
-    Save permit PDF to temporary file and schedule cleanup.
-
-    Args:
-        pdf_bytes: PDF file content
-        permit_number: Permit number/identifier for filename
-
-    Returns:
-        Temporary filename (not full path)
-    """
-    with NamedTemporaryFile(
-        mode='wb',
-        suffix='.pdf',
-        prefix=f'permit_{permit_number}_',
-        delete=False,
-        dir='/tmp'
-    ) as tmp_file:
-        tmp_file.write(pdf_bytes)
-        temp_file_path = tmp_file.name
-        temp_file_name = Path(temp_file_path).name
-
-        # Schedule deletion after 10 minutes
-        asyncio.create_task(schedule_file_deletion(temp_file_path, 600))
-
-        return temp_file_name
 
 # HTML template inline (can move to separate file later)
 HOME_TEMPLATE = """
@@ -92,7 +50,6 @@ HOME_TEMPLATE = """
             {% endif %}
             <span class="badge badge-info badge-toggle" id="autoPrintBadge">AUTO-PRINT ON</span>
         </div>
-        <p class="subtitle">Request temporary parking permits</p>
 
         <form action="/generate" method="post" id="permitForm">
             <input type="hidden" id="autoPrint" name="auto_print" value="true">
@@ -149,7 +106,6 @@ PROGRESS_TEMPLATE = """
 <body class="progress-container">
     <div class="header">
         <h1><span class="spinner" id="spinner"></span>Generating Permits</h1>
-        <div class="subtitle">Requesting {{ permits }} permit(s)...</div>
     </div>
 
     <div class="main-status">
@@ -238,12 +194,12 @@ PROGRESS_TEMPLATE = """
                     if (data.files && data.files.length > 0) {
                         const downloadLinks = document.createElement('div');
                         downloadLinks.className = 'download-links';
-                        data.files.forEach((filename, index) => {
+                        data.files.forEach((filename) => {
                             const link = document.createElement('a');
                             link.href = `/download/${filename}`;
                             link.className = 'download-link';
-                            link.textContent = `📄 Download Permit ${index + 1}`;
-                            link.download = `santa-monica-permit-${index + 1}.pdf`;
+                            link.textContent = `📄 Download Permit PDF`;
+                            link.download = `santa-monica-permit.pdf`;
                             downloadLinks.appendChild(link);
                         });
                         backButtonContainer.appendChild(downloadLinks);
@@ -330,6 +286,44 @@ async def generate_page(permits: int = Form(1), auto_print: str = Form("true")):
     return HTMLResponse(content=html)
 
 
+async def save_and_print_pdf(pdf_bytes: bytes, permit_id, auto_print: bool, automation, emit):
+    """Save PDF and optionally print it. Yields log messages, then (temp_file, success)."""
+    yield emit(f"  ✓ Downloaded PDF ({len(pdf_bytes)} bytes)", 'log')
+
+    # Save to temporary file
+    with NamedTemporaryFile(
+        mode='wb',
+        suffix='.pdf',
+        prefix=f'permit_{permit_id}_',
+        delete=False,
+        dir='/tmp'
+    ) as tmp_file:
+        tmp_file.write(pdf_bytes)
+        temp_file_path = tmp_file.name
+        temp_file = Path(temp_file_path).name
+
+        # Schedule deletion after 10 minutes
+        async def cleanup():
+            await asyncio.sleep(600)
+            try:
+                if os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
+            except Exception:
+                pass
+        asyncio.create_task(cleanup())
+
+    yield emit(f"  ✓ Saved as {temp_file}", 'log')
+
+    success = False
+    if auto_print:
+        yield emit(f"  📄 Printing to {settings.printer_name}...", 'log')
+        success = await automation.print_pdf(pdf_bytes, settings.printer_name)
+        yield emit("  ✓ Print job submitted successfully" if success else "  ✗ Print job failed", 'log')
+
+    yield emit("", 'log')
+    yield (temp_file, success)
+
+
 async def generate_permits_stream(
     num_permits: int, auto_print: bool = True, user_email: str | None = None
 ) -> AsyncGenerator[str]:
@@ -349,377 +343,339 @@ async def generate_permits_stream(
             data['files'] = files
         yield f"data: {json.dumps(data)}\n\n"
 
-    try:
-        # Use provided email or fall back to settings
-        email = user_email or settings.email
-        yield emit("=" * 60, 'log')
-        if settings.dry_run:
-            yield emit("DRY-RUN MODE - Test workflow without final submission", 'log')
-        else:
-            yield emit("Santa Monica Parking Permit Automation", 'log')
-        yield emit("=" * 60, 'log')
-        yield emit(f"Requesting {num_permits} permit(s)", 'log')
+    # Use provided email or fall back to settings
+    email = user_email or settings.email
+    yield emit("=" * 60, 'log')
+    if settings.dry_run:
+        yield emit("DRY-RUN MODE - Test workflow without final submission", 'log')
+    else:
+        yield emit("Santa Monica Parking Permit Automation", 'log')
+    yield emit("=" * 60, 'log')
+    yield emit("", 'log')
+
+    async with SantaMonicaPermitAutomation() as automation:
+        # Step 1: Fetch initial form
+        yield emit("[1/7] Fetching initial form...", 'log')
+        yield emit("Fetching form", 'status')
+
+        form_data = await automation.fetch_initial_form()
+        yield emit("  ✓ Form loaded (Status: 200)", 'log')
+        yield emit(f"  ✓ Found {len(form_data['form_fields'])} form fields", 'log')
+
+        if form_data['captcha_url']:
+            yield emit(f"  ✓ CAPTCHA URL: {form_data['captcha_url'][:50]}...", 'log')
         yield emit("", 'log')
 
-        async with SantaMonicaPermitAutomation() as automation:
-            # Step 1: Fetch initial form
-            yield emit("[1/7] Fetching initial form...", 'log')
-            yield emit("Fetching form", 'status')
+        # Step 2 & 3: Solve CAPTCHA and authenticate (with retry logic)
+        max_captcha_attempts = 3
+        captcha_attempt = 0
+        result = None
 
-            form_data = await automation.fetch_initial_form()
-            yield emit("  ✓ Form loaded (Status: 200)", 'log')
-            yield emit(f"  ✓ Found {len(form_data['form_fields'])} form fields", 'log')
+        while captcha_attempt < max_captcha_attempts:
+            captcha_attempt += 1
 
-            if form_data['captcha_url']:
-                yield emit(f"  ✓ CAPTCHA URL: {form_data['captcha_url'][:50]}...", 'log')
-            yield emit("", 'log')
+            # Solve CAPTCHA
+            yield emit(
+                f"[2/7] Solving CAPTCHA with Google Vision API (attempt {captcha_attempt}/{max_captcha_attempts})...",
+                'log'
+            )
+            yield emit("Solving CAPTCHA", 'status')
 
-            # Step 2 & 3: Solve CAPTCHA and authenticate (with retry logic)
-            max_captcha_attempts = 3
-            captcha_attempt = 0
-            result = None
+            captcha_text = await automation.download_and_solve_captcha(
+                form_data['captcha_url']
+            )
 
-            while captcha_attempt < max_captcha_attempts:
-                captcha_attempt += 1
-
-                # Solve CAPTCHA
+            # Validate CAPTCHA format (should be exactly 5 digits)
+            if not captcha_text.isdigit() or len(captcha_text) != 5:
                 yield emit(
-                    f"[2/7] Solving CAPTCHA with Google Vision API (attempt {captcha_attempt}/{max_captcha_attempts})...",
+                    f"  ⚠ CAPTCHA format invalid: '{captcha_text}' (expected 5 digits)",
                     'log'
                 )
-                yield emit("Solving CAPTCHA", 'status')
-
-                captcha_text = await automation.download_and_solve_captcha(
-                    form_data['captcha_url']
-                )
-
-                # Validate CAPTCHA format (should be exactly 5 digits)
-                if not captcha_text.isdigit() or len(captcha_text) != 5:
-                    yield emit(
-                        f"  ⚠ CAPTCHA format invalid: '{captcha_text}' (expected 5 digits)",
-                        'log'
-                    )
-                    if captcha_attempt < max_captcha_attempts:
-                        yield emit("  ↻ Retrying with fresh CAPTCHA...", 'log')
-                        # Refetch form to get new CAPTCHA
-                        form_data = await automation.fetch_initial_form()
-                        continue
-                    else:
-                        raise ValueError(
-                            f"Failed to solve CAPTCHA after {max_captcha_attempts} attempts"
-                        )
-
-                yield emit(f"  ✓ CAPTCHA solved: {captcha_text}", 'log')
-                yield emit("", 'log')
-
-                # Submit authentication
-                yield emit("[3/7] Submitting authentication...", 'log')
-                yield emit("Authenticating", 'status')
-
-                result = await automation.submit_form(
-                    form_action=form_data['form_action'],
-                    form_fields=form_data['form_fields'],
-                    account_number=settings.account_number,
-                    zip_code=settings.zip_code,
-                    last_name=settings.last_name,
-                    captcha_text=captcha_text,
-                    form_method=form_data['form_method']
-                )
-
-                # Check if CAPTCHA was rejected
-                if "Please Enter Valid Captcha Text" in result['html']:
-                    yield emit(
-                        f"  ✗ CAPTCHA rejected by server: '{captcha_text}'",
-                        'log'
-                    )
-                    if captcha_attempt < max_captcha_attempts:
-                        yield emit("  ↻ Retrying with fresh CAPTCHA...", 'log')
-                        # Refetch form to get new CAPTCHA
-                        form_data = await automation.fetch_initial_form()
-                        continue
-                    else:
-                        raise ValueError(
-                            f"CAPTCHA validation failed after {max_captcha_attempts} attempts"
-                        )
-
-                # Success!
-                yield emit(f"  ✓ Authentication submitted (Status: {result['status']})", 'log')
-
-                # Debug: Show session info
-                session_id = result.get('cookies', {}).get('JSESSIONID', 'N/A')
-                yield emit(f"  ℹ Session ID: {session_id}", 'log')
-
-                yield emit("", 'log')
-                break
-
-            # Ensure we got a valid result
-            if result is None:
-                raise ValueError("Failed to authenticate - no valid response received")
-
-            if settings.dry_run:
-                yield emit("=" * 60, 'log')
-                yield emit("DRY-RUN: Stopping before final submission", 'log')
-                yield emit("", 'log')
-
-                # Download test PDF from Wikipedia
-                test_pdf_url = "https://upload.wikimedia.org/wikipedia/commons/d/d3/Test.pdf"
-                temp_files = []
-
-                try:
-                    yield emit("[Test] Downloading demo permit...", 'log')
-                    response = await automation.client.get(test_pdf_url)
-                    response.raise_for_status()
-
-                    test_pdf_bytes = response.content
-                    yield emit(f"  ✓ Test PDF downloaded ({len(test_pdf_bytes)} bytes)", 'log')
-
-                    # Save to temporary file
-                    temp_file_name = save_permit_to_temp(test_pdf_bytes, 'test')
-                    temp_files.append(temp_file_name)
-                    yield emit(f"  ✓ Saved as {temp_file_name}", 'log')
-
-                    # Print test permit if enabled
-                    if auto_print:
-                        yield emit(f"  📄 Printing demo permit to {settings.printer_name}...", 'log')
-                        print_success = await automation.print_pdf(
-                            test_pdf_bytes, settings.printer_name
-                        )
-
-                        if print_success:
-                            yield emit(
-                                f"  ✓ Demo permit sent to printer: {settings.printer_name}", 'log'
-                            )
-                        else:
-                            yield emit("  ✗ Failed to print demo permit", 'log')
-                except Exception as e:
-                    yield emit(f"  ✗ Failed to download test PDF: {e}", 'log')
-
-                yield emit("=" * 60, 'log')
-                yield emit("Dry-run test completed successfully!", 'log')
-                yield emit("Complete", 'status')
-                yield emit("Generated 1 test permit", 'complete', files=temp_files)
-                return
-
-            # Step 4: Parse permit details form
-            yield emit("[4/7] Parsing permit details form...", 'log')
-            yield emit("Processing form", 'status')
-
-            next_form = await automation.parse_next_form(result['html'])
-            yield emit(f"  ✓ Found form action: {next_form['form_action']}", 'log')
-            yield emit(f"  ✓ Found {len(next_form['form_fields'])} fields", 'log')
-
-            # Debug: Show field names and TokenKey for troubleshooting
-            field_names = [name for name, _ in next_form['form_fields']]
-            yield emit(f"  ℹ Fields: {', '.join(field_names)}", 'log')
-
-            # Extract and display TokenKey for debugging
-            token_key = next((value['value'] for name, value in next_form['form_fields'] if name == 'TokenKey'), None)
-            if token_key:
-                yield emit(f"  ℹ TokenKey: {token_key}", 'log')
-
-            yield emit("", 'log')
-
-            # Step 5: Submit permit request details
-            yield emit("[5/7] Submitting permit request...", 'log')
-            yield emit("Submitting permit request", 'status')
-
-            today = date.today()
-
-            # Debug: Show what we're submitting
-            yield emit(f"  ℹ Requesting {num_permits} permit(s) for {today.strftime('%m/%d/%Y')}", 'log')
-            yield emit(f"  ℹ Email: {email}", 'log')
-
-            permit_result = await automation.submit_dynamic_form(
-                form_action=next_form['form_action'],
-                form_fields=next_form['form_fields'],
-                updates={
-                    'permitCount': str(num_permits),
-                    'permitMonth': str(today.month),
-                    'permitDay': str(today.day),
-                    'permitYear': str(today.year),
-                    'email': email,
-                    'emailConfirm': email
-                },
-                form_method=next_form['form_method']
-            )
-            yield emit(f"  ✓ Permit details submitted (Status: {permit_result['status']})", 'log')
-            yield emit("", 'log')
-
-            # Step 6: Parse confirmation form
-            yield emit("[6/7] Processing confirmation...", 'log')
-            yield emit("Confirming", 'status')
-
-            confirm_form = await automation.parse_next_form(permit_result['html'])
-            yield emit("  ✓ Confirmation form ready", 'log')
-
-            # Debug: Show confirmation form details
-            confirm_field_names = [name for name, _ in confirm_form['form_fields']]
-            yield emit(f"  ℹ Confirmation fields: {', '.join(confirm_field_names)}", 'log')
-
-            # Extract and display TokenKey for debugging
-            confirm_token = next((value['value'] for name, value in confirm_form['form_fields'] if name == 'TokenKey'), None)
-            if confirm_token:
-                yield emit(f"  ℹ TokenKey: {confirm_token}", 'log')
-
-            yield emit("", 'log')
-
-            # Step 7: Final submission
-            yield emit("[7/7] Final submission...", 'log')
-            yield emit("Finalizing", 'status')
-
-            final_result = await automation.submit_dynamic_form(
-                form_action=confirm_form['form_action'],
-                form_fields=confirm_form['form_fields'],
-                updates={
-                    'requestType': 'submit',
-                    'submit': 'Submit'
-                },
-                form_method=confirm_form['form_method']
-            )
-            yield emit(f"  ✓ Final submission complete (Status: {final_result['status']})", 'log')
-            yield emit("", 'log')
-
-            # Download PDFs
-            yield emit("Extracting PDF links...", 'log')
-
-            soup = BeautifulSoup(final_result['html'], 'lxml')
-
-            # Find JavaScript PDF links
-            pdf_links = []
-            javascript_links = soup.find_all('a', href=lambda x: x and 'javascript:' in x.lower())
-            yield emit(f"  ℹ Found {len(javascript_links)} JavaScript link(s) to parse", 'log')
-
-            for link in javascript_links:
-                href = link.get('href', '')
-                match = re.search(r"['\"]([^'\"]*(?:pdf|FileType=pdf)[^'\"]*)['\"]", href)
-                if match:
-                    pdf_url = match.group(1)
-                    if not pdf_url.startswith('http'):
-                        pdf_url = f"https://wmq.etimspayments.com{pdf_url}"
-                    pdf_links.append(pdf_url)
-                    yield emit(f"  ℹ PDF link: {pdf_url}", 'log')
-
-            yield emit(f"  ✓ Found {len(pdf_links)} PDF link(s)", 'log')
-            yield emit("", 'log')
-
-            # Validate that permits were actually generated
-            if len(pdf_links) == 0:
-                yield emit("✗ No permit PDFs were generated!", 'log')
-                yield emit("", 'log')
-                yield emit("Analyzing response for errors...", 'log')
-
-                # Check for common error indicators in the HTML response
-                error_messages = []
-
-                # Look for error text patterns
-                if "error" in final_result['html'].lower():
-                    error_section = soup.find(text=re.compile(r'error', re.IGNORECASE))
-                    if error_section:
-                        error_messages.append(f"Error found in response: {error_section.strip()}")
-
-                # Look for validation messages
-                if "please" in final_result['html'].lower() and "valid" in final_result['html'].lower():
-                    validation_text = soup.find(text=re.compile(r'please.*valid', re.IGNORECASE))
-                    if validation_text:
-                        error_messages.append(f"Validation issue: {validation_text.strip()}")
-
-                # Check for alert/warning divs
-                for alert in soup.find_all(['div', 'span'], class_=re.compile(r'(alert|error|warning)', re.IGNORECASE)):
-                    if alert.get_text(strip=True):
-                        error_messages.append(f"Alert: {alert.get_text(strip=True)}")
-
-                if error_messages:
-                    for msg in error_messages:
-                        yield emit(f"  • {msg}", 'log')
+                if captcha_attempt < max_captcha_attempts:
+                    yield emit("  ↻ Retrying with fresh CAPTCHA...", 'log')
+                    # Refetch form to get new CAPTCHA
+                    form_data = await automation.fetch_initial_form()
+                    continue
                 else:
-                    yield emit("  • No specific error message found in response", 'log')
+                    raise ValueError(
+                        f"Failed to solve CAPTCHA after {max_captcha_attempts} attempts"
+                    )
 
-                yield emit("", 'log')
-                yield emit("DEBUG: Response HTML snippet (first 500 chars):", 'log')
-                html_snippet = final_result['html'][:500].replace('\n', ' ').replace('\r', '')
-                yield emit(f"  {html_snippet}...", 'log')
-                yield emit("", 'log')
+            yield emit(f"  ✓ CAPTCHA solved: {captcha_text}", 'log')
+            yield emit("", 'log')
 
-                # Look for any form elements or text that might indicate what went wrong
-                yield emit("DEBUG: Checking page structure...", 'log')
+            # Submit authentication
+            yield emit("[3/7] Submitting authentication...", 'log')
+            yield emit("Authenticating", 'status')
 
-                # Check for forms (might be back at a previous step)
-                forms = soup.find_all('form')
-                if forms:
-                    yield emit(f"  • Found {len(forms)} form(s) on page", 'log')
-                    for idx, form in enumerate(forms[:2], 1):
-                        form_action = form.get('action', 'N/A')
-                        yield emit(f"    Form {idx}: action='{form_action}'", 'log')
+            result = await automation.submit_form(
+                form_action=form_data['form_action'],
+                form_fields=form_data['form_fields'],
+                account_number=settings.account_number,
+                zip_code=settings.zip_code,
+                last_name=settings.last_name,
+                captcha_text=captcha_text,
+                form_method=form_data['form_method']
+            )
 
-                # Check for any text in the body
-                body = soup.find('body')
-                if body:
-                    body_text = body.get_text(strip=True)[:200]
-                    yield emit(f"  • Body text (first 200 chars): {body_text}", 'log')
-
-                # Check page title
-                title = soup.find('title')
-                if title:
-                    yield emit(f"  • Page title: {title.get_text(strip=True)}", 'log')
-
-                yield emit("", 'log')
-                raise ValueError(
-                    "Permit generation failed: Final submission returned HTTP 200 but no PDF links were found. "
-                    "The form may have validation errors or the submission may not have been processed."
+            # Check if CAPTCHA was rejected
+            if "Please Enter Valid Captcha Text" in result['html']:
+                yield emit(
+                    f"  ✗ CAPTCHA rejected by server: '{captcha_text}'",
+                    'log'
                 )
+                if captcha_attempt < max_captcha_attempts:
+                    yield emit("  ↻ Retrying with fresh CAPTCHA...", 'log')
+                    # Refetch form to get new CAPTCHA
+                    form_data = await automation.fetch_initial_form()
+                    continue
+                else:
+                    raise ValueError(
+                        f"CAPTCHA validation failed after {max_captcha_attempts} attempts"
+                    )
 
-            # Download and print PDFs
-            print_success_count = 0
-            print_failure_count = 0
+            # Success!
+            yield emit(f"  ✓ Authentication submitted (Status: {result['status']})", 'log')
+
+            # Debug: Show session info
+            session_id = result.get('cookies', {}).get('JSESSIONID', 'N/A')
+            yield emit(f"  ℹ Session ID: {session_id}", 'log')
+
+            yield emit("", 'log')
+            break
+
+        # Ensure we got a valid result
+        if result is None:
+            raise ValueError("Failed to authenticate - no valid response received")
+
+        if settings.dry_run:
+            # Download test PDF from Wikipedia
+            test_pdf_url = "https://upload.wikimedia.org/wikipedia/commons/d/d3/Test.pdf"
             temp_files = []
 
-            for i, pdf_url in enumerate(pdf_links, 1):
-                yield emit(f"Downloading permit {i}/{len(pdf_links)}...", 'log')
-                yield emit(f"Downloading permit {i}", 'status')
+            try:
+                yield emit("Downloading permit PDF...", 'log')
+                response = await automation.client.get(test_pdf_url)
+                response.raise_for_status()
 
-                pdf_bytes = await automation.download_permit_pdf(pdf_url)
-                yield emit(f"  ✓ Downloaded permit {i} ({len(pdf_bytes)} bytes)", 'log')
-
-                # Save to temporary file
-                temp_file_name = save_permit_to_temp(pdf_bytes, i)
-                temp_files.append(temp_file_name)
-                yield emit(f"  ✓ Saved as {temp_file_name}", 'log')
-
-                if auto_print:
-                    yield emit(f"  📄 Printing permit {i} to {settings.printer_name}...", 'log')
-                    print_success = await automation.print_pdf(pdf_bytes, settings.printer_name)
-
-                    if print_success:
-                        yield emit("  ✓ Print job submitted successfully", 'log')
-                        print_success_count += 1
+                async for result in save_and_print_pdf(response.content, 'test', auto_print, automation, emit):
+                    if isinstance(result, tuple):
+                        temp_file, _ = result
+                        temp_files.append(temp_file)
                     else:
-                        yield emit("  ✗ Print job failed", 'log')
-                        print_failure_count += 1
-
-                yield emit("", 'log')
+                        yield result
+            except Exception as e:
+                yield emit(f"  ✗ Failed to download PDF: {e}", 'log')
 
             yield emit("=" * 60, 'log')
             yield emit("Workflow completed successfully!", 'log')
+            permit_text = f"{num_permits} permit" if num_permits == 1 else f"{num_permits} permits"
+            yield emit("Complete", 'status')
+            yield emit(f"Generated {permit_text}", 'complete', files=temp_files)
+            return
 
-            # Determine final status message
-            if auto_print:
-                if print_failure_count == 0:
-                    final_message = f"Generated and printed {len(pdf_links)} permit(s)"
-                    yield emit(final_message, 'log')
-                else:
-                    final_message = f"Generated {len(pdf_links)} permit(s): {print_success_count} printed, {print_failure_count} failed to print"
-                    yield emit(final_message, 'log')
+        # Step 4: Parse permit details form
+        yield emit("[4/7] Parsing permit details form...", 'log')
+        yield emit("Processing form", 'status')
+
+        next_form = await automation.parse_next_form(result['html'])
+        yield emit(f"  ✓ Found form action: {next_form['form_action']}", 'log')
+        yield emit(f"  ✓ Found {len(next_form['form_fields'])} fields", 'log')
+
+        # Debug: Show field names and TokenKey for troubleshooting
+        field_names = [name for name, _ in next_form['form_fields']]
+        yield emit(f"  ℹ Fields: {', '.join(field_names)}", 'log')
+
+        # Extract and display TokenKey for debugging
+        token_key = next((value['value'] for name, value in next_form['form_fields'] if name == 'TokenKey'), None)
+        if token_key:
+            yield emit(f"  ℹ TokenKey: {token_key}", 'log')
+
+        yield emit("", 'log')
+
+        # Step 5: Submit permit request details
+        yield emit("[5/7] Submitting permit request...", 'log')
+        yield emit("Submitting permit request", 'status')
+
+        today = date.today()
+
+        # Debug: Show what we're submitting
+        yield emit(f"  ℹ Requesting {num_permits} permit(s) for {today.strftime('%m/%d/%Y')}", 'log')
+        yield emit(f"  ℹ Email: {email}", 'log')
+
+        permit_result = await automation.submit_dynamic_form(
+            form_action=next_form['form_action'],
+            form_fields=next_form['form_fields'],
+            updates={
+                'permitCount': str(num_permits),
+                'permitMonth': str(today.month),
+                'permitDay': str(today.day),
+                'permitYear': str(today.year),
+                'email': email,
+                'emailConfirm': email
+            },
+            form_method=next_form['form_method']
+        )
+        yield emit(f"  ✓ Permit details submitted (Status: {permit_result['status']})", 'log')
+        yield emit("", 'log')
+
+        # Step 6: Parse confirmation form
+        yield emit("[6/7] Processing confirmation...", 'log')
+        yield emit("Confirming", 'status')
+
+        confirm_form = await automation.parse_next_form(permit_result['html'])
+        yield emit("  ✓ Confirmation form ready", 'log')
+
+        # Debug: Show confirmation form details
+        confirm_field_names = [name for name, _ in confirm_form['form_fields']]
+        yield emit(f"  ℹ Confirmation fields: {', '.join(confirm_field_names)}", 'log')
+
+        # Extract and display TokenKey for debugging
+        confirm_token = next((value['value'] for name, value in confirm_form['form_fields'] if name == 'TokenKey'), None)
+        if confirm_token:
+            yield emit(f"  ℹ TokenKey: {confirm_token}", 'log')
+
+        yield emit("", 'log')
+
+        # Step 7: Final submission
+        yield emit("[7/7] Final submission...", 'log')
+        yield emit("Finalizing", 'status')
+
+        final_result = await automation.submit_dynamic_form(
+            form_action=confirm_form['form_action'],
+            form_fields=confirm_form['form_fields'],
+            updates={
+                'requestType': 'submit',
+                'submit': 'Submit'
+            },
+            form_method=confirm_form['form_method']
+        )
+        yield emit(f"  ✓ Final submission complete (Status: {final_result['status']})", 'log')
+        yield emit("", 'log')
+
+        # Download PDFs
+        yield emit("Extracting PDF links...", 'log')
+
+        soup = BeautifulSoup(final_result['html'], 'lxml')
+
+        # Find JavaScript PDF links
+        pdf_links = []
+        javascript_links = soup.find_all('a', href=lambda x: x and 'javascript:' in x.lower())
+        yield emit(f"  ℹ Found {len(javascript_links)} JavaScript link(s) to parse", 'log')
+
+        for link in javascript_links:
+            href = link.get('href', '')
+            match = re.search(r"['\"]([^'\"]*(?:pdf|FileType=pdf)[^'\"]*)['\"]", href)
+            if match:
+                pdf_url = match.group(1)
+                if not pdf_url.startswith('http'):
+                    pdf_url = f"https://wmq.etimspayments.com{pdf_url}"
+                pdf_links.append(pdf_url)
+                yield emit(f"  ℹ PDF link: {pdf_url}", 'log')
+
+        yield emit(f"  ✓ Found {len(pdf_links)} PDF link(s)", 'log')
+        yield emit("", 'log')
+
+        # Validate that permits were actually generated
+        if len(pdf_links) == 0:
+            yield emit("✗ No permit PDFs were generated!", 'log')
+            yield emit("", 'log')
+            yield emit("Analyzing response for errors...", 'log')
+
+            # Check for common error indicators in the HTML response
+            error_messages = []
+
+            # Look for error text patterns
+            if "error" in final_result['html'].lower():
+                error_section = soup.find(text=re.compile(r'error', re.IGNORECASE))
+                if error_section:
+                    error_messages.append(f"Error found in response: {error_section.strip()}")
+
+            # Look for validation messages
+            if "please" in final_result['html'].lower() and "valid" in final_result['html'].lower():
+                validation_text = soup.find(text=re.compile(r'please.*valid', re.IGNORECASE))
+                if validation_text:
+                    error_messages.append(f"Validation issue: {validation_text.strip()}")
+
+            # Check for alert/warning divs
+            for alert in soup.find_all(['div', 'span'], class_=re.compile(r'(alert|error|warning)', re.IGNORECASE)):
+                if alert.get_text(strip=True):
+                    error_messages.append(f"Alert: {alert.get_text(strip=True)}")
+
+            if error_messages:
+                for msg in error_messages:
+                    yield emit(f"  • {msg}", 'log')
             else:
-                final_message = f"Generated {len(pdf_links)} permit(s)"
-                yield emit(final_message, 'log')
+                yield emit("  • No specific error message found in response", 'log')
 
-            yield emit("=" * 60, 'log')
-            yield emit("Complete!", 'status')
-            yield emit(final_message, 'complete', files=temp_files)
+            yield emit("", 'log')
+            yield emit("DEBUG: Response HTML snippet (first 500 chars):", 'log')
+            html_snippet = final_result['html'][:500].replace('\n', ' ').replace('\r', '')
+            yield emit(f"  {html_snippet}...", 'log')
+            yield emit("", 'log')
 
-    except Exception as e:
-        yield emit(f"Error: {e!s}", 'error')
-        yield emit(traceback.format_exc(), 'log')
+            # Look for any form elements or text that might indicate what went wrong
+            yield emit("DEBUG: Checking page structure...", 'log')
+
+            # Check for forms (might be back at a previous step)
+            forms = soup.find_all('form')
+            if forms:
+                yield emit(f"  • Found {len(forms)} form(s) on page", 'log')
+                for idx, form in enumerate(forms[:2], 1):
+                    form_action = form.get('action', 'N/A')
+                    yield emit(f"    Form {idx}: action='{form_action}'", 'log')
+
+            # Check for any text in the body
+            body = soup.find('body')
+            if body:
+                body_text = body.get_text(strip=True)[:200]
+                yield emit(f"  • Body text (first 200 chars): {body_text}", 'log')
+
+            # Check page title
+            title = soup.find('title')
+            if title:
+                yield emit(f"  • Page title: {title.get_text(strip=True)}", 'log')
+
+            yield emit("", 'log')
+            raise ValueError(
+                "Permit generation failed: Final submission returned HTTP 200 but no PDF links were found. "
+                "The form may have validation errors or the submission may not have been processed."
+            )
+
+        # Download and print PDF (contains all requested permits)
+        pdf_url = pdf_links[0]
+        temp_files = []
+
+        yield emit("Downloading permit PDF...", 'log')
+        yield emit("Downloading PDF", 'status')
+
+        pdf_bytes = await automation.download_permit_pdf(pdf_url)
+
+        print_success = False
+        async for result in save_and_print_pdf(pdf_bytes, 1, auto_print, automation, emit):
+            if isinstance(result, tuple):
+                temp_file, print_success = result
+                temp_files.append(temp_file)
+            else:
+                yield result
+
+        yield emit("=" * 60, 'log')
+        yield emit("Workflow completed successfully!", 'log')
+
+        # Determine final status message
+        permit_text = f"{num_permits} permit" if num_permits == 1 else f"{num_permits} permits"
+        if auto_print:
+            if print_success:
+                final_message = f"Generated and printed {permit_text}"
+            else:
+                final_message = f"Generated {permit_text} but printing failed"
+        else:
+            final_message = f"Generated {permit_text}"
+        yield emit(final_message, 'log')
+
+        yield emit("=" * 60, 'log')
+        yield emit("Complete!", 'status')
+        yield emit(final_message, 'complete', files=temp_files)
 
 
 @app.get("/stream")
@@ -734,10 +690,18 @@ async def stream_progress(request: Request, permits: int = 1, auto_print: str = 
     auto_print_bool = auto_print.lower() == "true"
 
     async def event_generator():
-        async for event in generate_permits_stream(permits, auto_print_bool, user_email):
-            async for chunk in event:
-                yield chunk
-            await asyncio.sleep(0.01)  # Small delay for smooth streaming
+        try:
+            async for event in generate_permits_stream(permits, auto_print_bool, user_email):
+                async for chunk in event:
+                    yield chunk
+                await asyncio.sleep(0.01)  # Small delay for smooth streaming
+        except Exception as e:
+            # Emit error as Server-Sent Event
+            error_data = {'type': 'error', 'message': str(e)}
+            yield f"data: {json.dumps(error_data)}\n\n"
+            # Also emit traceback to log
+            log_data = {'type': 'log', 'message': traceback.format_exc()}
+            yield f"data: {json.dumps(log_data)}\n\n"
 
     return StreamingResponse(
         event_generator(),
