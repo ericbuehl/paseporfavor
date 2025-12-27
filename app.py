@@ -48,21 +48,29 @@ HOME_TEMPLATE = """
             {% if dry_run %}
             <span class="badge badge-warning">DRY-RUN MODE</span>
             {% endif %}
-            <span class="badge badge-info badge-toggle" id="autoPrintBadge">AUTO-PRINT ON</span>
+            <span class="badge badge-autoprint badge-enabled badge-toggle" id="autoPrintBadge">Auto-Print</span>
         </div>
 
         <form action="/generate" method="post" id="permitForm">
             <input type="hidden" id="autoPrint" name="auto_print" value="true">
+            <input type="hidden" id="permits" name="permits" value="1">
 
             <div class="form-group">
-                <label for="permits">Number of Permits:</label>
-                <input type="number" id="permits" name="permits" min="1" max="5" value="1" required>
+                <div class="permit-stepper">
+                    <button type="button" class="stepper-button stepper-down" id="decrementBtn">−</button>
+                    <span class="permit-count" id="permitCount">1</span>
+                    <button type="button" class="stepper-button stepper-up" id="incrementBtn">+</button>
+                </div>
             </div>
 
-            <button type="submit" class="go-button">GO</button>
+            <button type="submit" class="go-button" id="goButton">Request & Print</button>
         </form>
 
-        <div class="info">
+        <button class="info-toggle" id="infoToggle">
+            <span class="info-toggle-icon" id="infoToggleIcon">▼</span>
+            <span>Account Details</span>
+        </button>
+        <div class="info" id="infoSection">
             <strong>Account:</strong> {{ account_number }}<br>
             <strong>Name:</strong> {{ last_name }}<br>
             <strong>Email:</strong> <!--email_off-->{{ email }}<!--/email_off-->
@@ -72,22 +80,64 @@ HOME_TEMPLATE = """
     <script>
         const autoPrintBadge = document.getElementById('autoPrintBadge');
         const autoPrintInput = document.getElementById('autoPrint');
+        const goButton = document.getElementById('goButton');
+        const permitsInput = document.getElementById('permits');
+        const permitCount = document.getElementById('permitCount');
+        const incrementBtn = document.getElementById('incrementBtn');
+        const decrementBtn = document.getElementById('decrementBtn');
+        const infoToggle = document.getElementById('infoToggle');
+        const infoSection = document.getElementById('infoSection');
+        const infoToggleIcon = document.getElementById('infoToggleIcon');
 
+        // Info section toggle
+        infoToggle.addEventListener('click', function() {
+            infoSection.classList.toggle('expanded');
+            infoToggleIcon.classList.toggle('expanded');
+        });
+
+        // Auto-print toggle
         autoPrintBadge.addEventListener('click', function() {
             const isEnabled = autoPrintInput.value === 'true';
 
             if (isEnabled) {
                 autoPrintInput.value = 'false';
-                autoPrintBadge.textContent = 'AUTO-PRINT OFF';
-                autoPrintBadge.classList.remove('badge-info');
-                autoPrintBadge.classList.add('badge-secondary');
+                autoPrintBadge.classList.remove('badge-enabled');
+                autoPrintBadge.classList.add('badge-disabled');
+                goButton.textContent = 'Request';
             } else {
                 autoPrintInput.value = 'true';
-                autoPrintBadge.textContent = 'AUTO-PRINT ON';
-                autoPrintBadge.classList.remove('badge-secondary');
-                autoPrintBadge.classList.add('badge-info');
+                autoPrintBadge.classList.remove('badge-disabled');
+                autoPrintBadge.classList.add('badge-enabled');
+                goButton.textContent = 'Request & Print';
             }
         });
+
+        // Permit stepper
+        function updatePermitCount(value) {
+            permitsInput.value = value;
+            permitCount.textContent = value;
+
+            // Disable/enable buttons based on limits
+            decrementBtn.disabled = value <= 1;
+            incrementBtn.disabled = value >= 5;
+        }
+
+        incrementBtn.addEventListener('click', function() {
+            const current = parseInt(permitsInput.value);
+            if (current < 5) {
+                updatePermitCount(current + 1);
+            }
+        });
+
+        decrementBtn.addEventListener('click', function() {
+            const current = parseInt(permitsInput.value);
+            if (current > 1) {
+                updatePermitCount(current - 1);
+            }
+        });
+
+        // Initialize button states
+        updatePermitCount(1);
     </script>
 </body>
 </html>
