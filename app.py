@@ -26,7 +26,8 @@ app = FastAPI(title="Santa Monica Permit Automation")
 # Mount static files directory
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-
+# Static file version for cache busting
+STATIC_VERSION = "2"
 
 # HTML template inline (can move to separate file later)
 HOME_TEMPLATE = """
@@ -37,7 +38,7 @@ HOME_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="color-scheme" content="light dark">
     <title>Santa Monica Permit Request</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v={{ version }}">
 </head>
 <body class="home-container">
     <div class="container">
@@ -151,7 +152,7 @@ PROGRESS_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="color-scheme" content="light dark">
     <title>Generating Permits...</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v={{ version }}">
 </head>
 <body class="progress-container">
     <div class="header">
@@ -312,6 +313,7 @@ async def home(request: Request):
 
     # Simple template rendering
     html = HOME_TEMPLATE
+    html = html.replace('{{ version }}', STATIC_VERSION)
     html = html.replace('{{ account_number }}', str(account_number))
     html = html.replace('{{ last_name }}', str(last_name))
     html = html.replace('{{ email }}', str(email))
@@ -331,7 +333,8 @@ async def home(request: Request):
 @app.post("/generate", response_class=HTMLResponse)
 async def generate_page(permits: int = Form(1), auto_print: str = Form("true")):
     """Progress page that streams permit generation."""
-    html = PROGRESS_TEMPLATE.replace('{{ permits }}', str(permits))
+    html = PROGRESS_TEMPLATE.replace('{{ version }}', STATIC_VERSION)
+    html = html.replace('{{ permits }}', str(permits))
     html = html.replace('{{ auto_print }}', auto_print)
     return HTMLResponse(content=html)
 
